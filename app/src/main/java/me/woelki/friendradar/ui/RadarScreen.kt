@@ -1,5 +1,6 @@
 package me.woelki.friendradar.ui
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
@@ -19,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -97,7 +100,15 @@ private fun TabBar(current: Tab, onSelect: (Tab) -> Unit) {
 @Composable
 private fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
     when (val current = state) {
-        ChatUiState.Idle -> IdleContent(onStart = { viewModel.setBrowsing(true) })
+        ChatUiState.Idle -> {
+            val mode by viewModel.mode.collectAsState()
+            IdleContent(
+                mode = mode,
+                wideRangeAvailable = viewModel.wideRangeAvailable,
+                onModeChange = { viewModel.setMode(it) },
+                onStart = { viewModel.setBrowsing(true) },
+            )
+        }
         is ChatUiState.Browsing -> BrowsingContent(
             peerCount = current.nearbyPeers.size,
             onStop = { viewModel.setBrowsing(false) },
@@ -134,15 +145,32 @@ private fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
 }
 
 @Composable
-private fun IdleContent(onStart: () -> Unit) {
-    Text("You're not visible to anyone right now.")
+private fun IdleContent(mode: ChatMode, wideRangeAvailable: Boolean, onModeChange: (ChatMode) -> Unit, onStart: () -> Unit) {
+    Text("Find people:")
+    Spacer(Modifier.height(4.dp))
+    Row {
+        TextButton(onClick = { onModeChange(ChatMode.LOCAL_BLE) }) {
+            Text(if (mode == ChatMode.LOCAL_BLE) "[Nearby (Bluetooth)]" else "Nearby (Bluetooth)")
+        }
+        TextButton(onClick = { onModeChange(ChatMode.WIDE_RANGE) }, enabled = wideRangeAvailable) {
+            Text(if (mode == ChatMode.WIDE_RANGE) "[Wide range (internet)]" else "Wide range (internet)")
+        }
+    }
+    if (!wideRangeAvailable) {
+        Text("Wide-range isn't built into this app - see p2p-go/README.md.", style = MaterialTheme.typography.bodySmall)
+    }
     Spacer(Modifier.height(8.dp))
-    Button(onClick = onStart) { Text("Become visible nearby") }
+    Text(
+        if (mode == ChatMode.LOCAL_BLE) "You're not visible to anyone right now."
+        else "You're not visible to anyone right now. Set your area in Profile first if you haven't.",
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(onClick = onStart) { Text("Become visible") }
 }
 
 @Composable
 private fun BrowsingContent(peerCount: Int, onStop: () -> Unit, onRandomChat: () -> Unit) {
-    Text(if (peerCount == 0) "Looking for people nearby…" else "$peerCount people nearby right now")
+    Text(if (peerCount == 0) "Looking for people…" else "$peerCount people found right now")
     Spacer(Modifier.height(8.dp))
     Button(onClick = onRandomChat, modifier = Modifier.fillMaxWidth()) {
         Text("Chat with someone nearby")
@@ -337,11 +365,21 @@ private fun BlockedTab(viewModel: ChatViewModel) {
     }
 }
 
+private val RADIUS_PRESETS = listOf(20.0 to "Neighborhood", 75.0 to "City", 600.0 to "Region", 20_000.0 to "Worldwide")
+
 @Composable
 private fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
+    var geohashDraft by remember { mutableStateOf(viewModel.coarseGeohash ?: "") }
+    var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
+    var bootstrapDraft by remember { mutableStateOf(viewModel.bootstrapNodes.joinToString("\n")) }
+    var locationDenied by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) viewModel.useCurrentAreaAsGeohash()?.let { geohashDraft = it } else locationDenied = true
+    }
+
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("Your profile", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text("Others see you as: ${Profile.displayName(draft, viewModel.myPeerId)}")
@@ -358,5 +396,48 @@ private fun ProfileTab(viewModel: ChatViewModel) {
             "The part after # is unique to your device, so people who picked the same pseudonym as you stay distinguishable.",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        Spacer(Modifier.height(24.dp))
+        Text("Wide-range (internet)", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Your area, as a coarse cell roughly the size of the search radius below - never your exact location.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(value = geohashDraft, onValueChange = { geohashDraft = it }, label = { Text("Area (geohash)") })
+        Row {
+            TextButton(onClick = { locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION) }) { Text("Use my area") }
+            TextButton(onClick = { viewModel.coarseGeohash = geohashDraft.trim().ifEmpty { null } }) { Text("Save area") }
+        }
+        if (locationDenied) {
+            Text("Location permission denied - type your area's geohash manually instead.", style = MaterialTheme.typography.bodySmall)
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text("Search radius: ${RADIUS_PRESETS.firstOrNull { it.first == radiusKm }?.second ?: "${radiusKm.toInt()} km"}")
+        Row {
+            RADIUS_PRESETS.forEach { (km, label) ->
+                TextButton(onClick = { radiusKm = km; viewModel.searchRadiusKm = km }) {
+                    Text(if (km == radiusKm) "[$label]" else label)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Bootstrap/relay nodes, one multiaddr per line - empty by default, since no single " +
+                "party runs one for everyone (see p2p-go/README.md). Wide-range discovery can't " +
+                "find anyone until at least one is set here.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = bootstrapDraft,
+            onValueChange = { bootstrapDraft = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Bootstrap/relay multiaddrs") },
+        )
+        Button(onClick = { viewModel.bootstrapNodes = bootstrapDraft.lines().map { it.trim() }.filter { it.isNotEmpty() } }) {
+            Text("Save nodes")
+        }
     }
 }

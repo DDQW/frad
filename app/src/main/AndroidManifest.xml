@@ -15,7 +15,14 @@
          still gated behind coarse location even though no location is ever read. -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
+
+    <!-- Wide-range (M4) "Use my area" button only - a coarse, one-shot fix immediately reduced
+         to a geohash cell and discarded (see wideradius/CoarseLocation.kt); never requested as
+         part of BLE's own permission set above, and the wide-range layer works without it too
+         (manual geohash entry). No maxSdkVersion cap, unlike the legacy BLE-only grant it used
+         to double as - this one is requested at any API level, on demand, only when that button
+         is tapped. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
@@ -29,6 +36,10 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
 
     <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+
+    <!-- Wide-range discovery/chat/file-transfer (M4) - the go-libp2p layer. M1-M3 needed no
+         internet access at all; this is the first FRAD feature that does. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".FriendRadarApp"
