@@ -3,6 +3,7 @@ package me.woelki.friendradar.crypto
 import java.util.Base64
 import me.woelki.friendradar.crypto.noise.Primitives
 import org.bouncycastle.crypto.InvalidCipherTextException
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
@@ -72,6 +73,19 @@ class ChatSessionTest {
         assertThrows(InvalidCipherTextException::class.java) {
             h.bob.decryptMessage(ciphertext)
         }
+    }
+
+    @Test
+    fun `both sides derive the same transfer key, independent of the chat's own messages`() {
+        val h = handshake()
+
+        assertArrayEquals(h.alice.deriveTransferKey(), h.bob.deriveTransferKey())
+
+        // Encrypting a chat message must not perturb the derived transfer key - the two are
+        // meant to be independent so a concurrent BLE message and Wi-Fi Direct file transfer
+        // can't collide on one nonce counter (see ChatSession.deriveTransferKey).
+        h.alice.encryptMessage("hello")
+        assertArrayEquals(h.alice.deriveTransferKey(), h.bob.deriveTransferKey())
     }
 
     @Test

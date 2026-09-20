@@ -2,6 +2,7 @@ package me.woelki.friendradar.contacts
 
 import android.content.Context
 import me.woelki.friendradar.ble.ChatMessage
+import me.woelki.friendradar.ble.MessageKind
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,11 +18,11 @@ class ChatHistoryStore(context: Context) {
 
     fun messagesFor(peerId: String): List<ChatMessage> {
         val raw = prefs.getString(peerId, null) ?: return emptyList()
-        return decode(raw)
+        return ChatMessageJson.decode(raw)
     }
 
     fun append(peerId: String, message: ChatMessage) {
-        prefs.edit().putString(peerId, encode(messagesFor(peerId) + message)).apply()
+        prefs.edit().putString(peerId, ChatMessageJson.encode(messagesFor(peerId) + message)).apply()
     }
 
     /** Writes [messages] as this peer's history, but only if nothing is stored yet - used
@@ -29,35 +30,56 @@ class ChatHistoryStore(context: Context) {
      *  that same session before the save happened. */
     fun backfillIfEmpty(peerId: String, messages: List<ChatMessage>) {
         if (messages.isEmpty() || prefs.contains(peerId)) return
-        prefs.edit().putString(peerId, encode(messages)).apply()
+        prefs.edit().putString(peerId, ChatMessageJson.encode(messages)).apply()
     }
 
     fun clear(peerId: String) {
         prefs.edit().remove(peerId).apply()
     }
 
-    private fun encode(messages: List<ChatMessage>): String {
+    private companion object {
+        const val PREFS_FILE = "friendradar_chat_history"
+    }
+}
+
+/** Pure JSON (de)serialization for [ChatMessage], split out from [ChatHistoryStore] so it's
+ *  unit-testable without a real on-device `SharedPreferences`/`Context`. */
+internal object ChatMessageJson {
+    fun encode(messages: List<ChatMessage>): String {
         val array = JSONArray()
         messages.forEach { message ->
-            array.put(
-                JSONObject()
-                    .put("fromMe", message.fromMe)
-                    .put("text", message.text)
-                    .put("atMillis", message.atMillis),
-            )
+            val obj = JSONObject()
+                .put("fromMe", message.fromMe)
+                .put("text", message.text)
+                .put("atMillis", message.atMillis)
+                .put("kind", message.kind.name)
+            if (message.kind == MessageKind.FILE) {
+                obj.put("fileName", message.fileName)
+                    .put("mimeType", message.mimeType)
+                    .put("sizeBytes", message.sizeBytes)
+                    .put("localPath", message.localPath)
+            }
+            array.put(obj)
         }
         return array.toString()
     }
 
-    private fun decode(raw: String): List<ChatMessage> {
+    /** [MessageKind] defaults to `TEXT` for a missing `"kind"` key so transcripts saved by M2,
+     *  before file messages existed, keep loading unchanged. */
+    fun decode(raw: String): List<ChatMessage> {
         val array = JSONArray(raw)
         return (0 until array.length()).map { index ->
             val obj = array.getJSONObject(index)
-            ChatMessage(fromMe = obj.getBoolean("fromMe"), text = obj.getString("text"), atMillis = obj.getLong("atMillis"))
+            ChatMessage(
+                fromMe = obj.getBoolean("fromMe"),
+                text = obj.getString("text"),
+                atMillis = obj.getLong("atMillis"),
+                kind = if (obj.has("kind")) MessageKind.valueOf(obj.getString("kind")) else MessageKind.TEXT,
+                fileName = if (obj.has("fileName")) obj.getString("fileName") else null,
+                mimeType = if (obj.has("mimeType")) obj.getString("mimeType") else null,
+                sizeBytes = obj.optLong("sizeBytes", 0L),
+                localPath = if (obj.has("localPath")) obj.getString("localPath") else null,
+            )
         }
-    }
-
-    private companion object {
-        const val PREFS_FILE = "friendradar_chat_history"
     }
 }

@@ -15,11 +15,11 @@ android {
         // for a later milestone) needs API 26+. 26 is the floor for both.
         minSdk = 26
         targetSdk = 36
-        // Keep this under 1.0.0 until M3-M6 (see README "Project status") land -
+        // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -74,6 +74,10 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Local unit tests run against the real JDK, not a device, so the Android SDK's org.json
+    // classes (which BleChatController/ChatHistoryStore use) are stub-only there; this real
+    // implementation shadows those stubs so ChatMessageJson can be tested directly.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.06.00"))
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

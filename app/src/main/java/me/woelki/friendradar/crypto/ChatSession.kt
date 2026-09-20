@@ -67,4 +67,14 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
         val keys = transportKeys ?: error("Handshake not complete")
         return String(keys.decrypt(ciphertext), StandardCharsets.UTF_8)
     }
+
+    /** A 32-byte secret independent of the chat's own transport keys, for encrypting a
+     *  side-channel Wi-Fi Direct file transfer (see [me.woelki.friendradar.crypto.TransferCipher])
+     *  instead of reusing the chat's [encryptMessage]/[decryptMessage] nonce counter, which two
+     *  concurrent transports incrementing independently could otherwise collide on. Identical on
+     *  both sides, since it's derived from the mutually-authenticated handshake transcript. */
+    fun deriveTransferKey(): ByteArray {
+        check(isReady) { "Handshake not complete" }
+        return handshake.deriveKey("frad-wfd-media-v1".toByteArray(StandardCharsets.US_ASCII))
+    }
 }

@@ -123,6 +123,10 @@ internal class NoiseXXHandshake(
 
     fun remoteStaticKey(): ByteArray = remoteStaticPublicKey
         ?: error("Handshake not complete: remote static key not yet known")
+
+    /** Derives a 32-byte secret independent of the transport keys returned by [split],
+     *  identical on both sides post-handshake — see [ChatSession.deriveTransferKey]. */
+    fun deriveKey(info: ByteArray): ByteArray = symmetric.deriveKey(info)
 }
 
 internal class NoiseTransportKeys(

@@ -23,10 +23,21 @@ class MainActivity : ComponentActivity() {
     private var permissionsGranted by mutableStateOf(false)
 
     private val requiredPermissions: Array<String>
-        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+        get() {
+            val ble = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
+            } else {
+                arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            // Wi-Fi Direct file transfer (M3) is only ever used from API 29+ (see
+            // BleChatController), and WifiP2pManager needs one of these two on top of BLE's
+            // own permissions, same tiered split as BLE scanning above.
+            val wifiDirect = when {
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> emptyArray()
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
+                else -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            return ble + wifiDirect
         }
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->

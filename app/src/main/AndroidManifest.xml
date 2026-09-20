@@ -19,6 +19,17 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- Wi-Fi Direct file transfer (M3), only ever used from API 29+ (see BleChatController) -
+         so the feature itself is optional, unlike BLE which the app can't run without. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:targetApi="33"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+
+    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+
     <application
         android:name=".FriendRadarApp"
         android:allowBackup="false"
@@ -36,6 +47,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Lets a received file (M3) be handed to another app via ACTION_VIEW without
+             exposing the app's private storage directly. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

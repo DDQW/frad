@@ -63,8 +63,22 @@ you have it, or ask in an issue — the summary above is the durable version.
   erases their history too. Saved history is viewable read-only from the
   Contacts tab (you can't message a saved contact on demand, since discovery
   is still anonymous/rotating — you can only see what was said in past chats).
-- M3–M6 (Wi-Fi Direct media transfer, the wide-range DHT layer, abuse
-  hardening, F-Droid release packaging): not started.
+- **M3 — Wi-Fi Direct file transfer**: implemented for Android 10+ (API 29).
+  Once two phones are chatting over BLE, either side can attach any file (up
+  to 25 MB); the two phones form a one-off Wi-Fi Direct group (its network
+  name/passphrase relayed over the already-encrypted BLE channel) and stream
+  the file over a socket, encrypted with a key derived from that same chat's
+  Noise session — never the chat's own message key, so a concurrent text
+  message and file transfer can't collide on one nonce counter. Received
+  files are auto-accepted (same trust model as text messages) and shown
+  inline if they're an image, or as a name/size chip with an "Open" button
+  otherwise. Below API 29, the attach button doesn't appear — BLE text chat
+  is unaffected. Like chat history, a file is only kept on disk once its
+  peer is a saved contact. **Not yet verified**: the actual Wi-Fi Direct
+  radio path needs two physical Android 10+ phones, the same real-hardware
+  caveat M1's BLE path has.
+- M4–M6 (the wide-range DHT layer, abuse hardening, F-Droid release
+  packaging): not started.
 
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
@@ -100,10 +114,17 @@ one.
 
 - `crypto/` — identity keypair + the Noise_XX end-to-end encryption handshake
   and session. Transport-agnostic; reused by the wide-range layer later.
+  `TransferCipher` encrypts a Wi-Fi Direct file transfer with a key derived
+  from the chat's Noise session (`ChatSession.deriveTransferKey`) but
+  independent of the chat's own message key.
 - `ble/` — BLE presence advertising/scanning (`BlePeripheralServer`,
   `BleCentralClient`), message fragmentation over the GATT MTU (`Framing`),
   and `BleChatController`, which wires all of the above plus pairing/safety
-  into the state machine the UI drives.
+  and Wi-Fi Direct file-transfer orchestration into the state machine the UI
+  drives.
+- `wifidirect/` — `WifiDirectTransferManager`, the one place `WifiP2pManager`
+  is touched: creates/joins a one-off Wi-Fi Direct group per file transfer
+  and streams the encrypted bytes over a socket. API 29+ only.
 - `pairing/` — `RandomMatcher`, the on-device "pick someone nearby" logic.
 - `profile/` — the user's local, freely-editable pseudonym, shown together with a
   short tag derived from the peer id so two people with the same pseudonym stay
@@ -111,6 +132,9 @@ one.
 - `contacts/` — on-device address book of peers saved from a past chat
   (`ContactStore`), plus their persisted chat transcript (`ChatHistoryStore`,
   saved contacts only).
+- `data/` — `MediaFileStore`, on-device storage for files sent/received over
+  Wi-Fi Direct, one subdirectory per peer; exposed to other apps only via a
+  `FileProvider` when the user explicitly opens a received file.
 - `safety/` — block list, report flow, request cooldown/rate-limiting.
 - `ui/` — Jetpack Compose screens + the `ChatViewModel` that bridges to
   `BleChatController`.

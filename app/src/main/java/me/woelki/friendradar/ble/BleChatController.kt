@@ -1,22 +1,47 @@
 package me.woelki.friendradar.ble
 
 import android.content.Context
+import android.os.Build
 import kotlin.random.Random
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import me.woelki.friendradar.contacts.ChatHistoryStore
 import me.woelki.friendradar.contacts.ContactStore
 import me.woelki.friendradar.crypto.ChatSession
 import me.woelki.friendradar.crypto.Identity
+import me.woelki.friendradar.data.MediaFileStore
 import me.woelki.friendradar.pairing.NearbyPeer
 import me.woelki.friendradar.pairing.RandomMatcher
 import me.woelki.friendradar.profile.Profile
 import me.woelki.friendradar.safety.BlockList
 import me.woelki.friendradar.safety.Cooldown
 import me.woelki.friendradar.safety.ReportFlow
+import me.woelki.friendradar.wifidirect.WfdCredentials
+import me.woelki.friendradar.wifidirect.WifiDirectTransferManager
+import org.json.JSONObject
 
-data class ChatMessage(val fromMe: Boolean, val text: String, val atMillis: Long)
+enum class MessageKind { TEXT, FILE }
+
+/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text]. */
+data class ChatMessage(
+    val fromMe: Boolean,
+    val text: String,
+    val atMillis: Long,
+    val kind: MessageKind = MessageKind.TEXT,
+    val fileName: String? = null,
+    val mimeType: String? = null,
+    val sizeBytes: Long = 0L,
+    val localPath: String? = null,
+)
+
+/** Maximum size of a file this app will send or accept over Wi-Fi Direct — guards against
+ *  accidental huge sends and against a peer claiming an implausible size in a file offer. */
+const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
 
 sealed interface ChatUiState {
     /** Broadcasting is off; nothing is happening. */
@@ -46,6 +71,7 @@ class BleChatController(
     private val blockList = BlockList(context)
     private val contactStore = ContactStore(context)
     private val historyStore = ChatHistoryStore(context)
+    private val mediaFileStore = MediaFileStore(context)
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
@@ -53,8 +79,22 @@ class BleChatController(
     private val peripheral = BlePeripheralServer(context, this)
     private val central = BleCentralClient(context, this)
 
+    // Wi-Fi Direct's "connect with a specific network name/passphrase" API, needed to make
+    // sure a file transfer's socket ends up talking to the exact peer already in this chat
+    // rather than matching against broadcast peer discovery, only exists from API 29 — see
+    // the M3 milestone plan. Below that, file transfer is simply unavailable.
+    private val transferManager: WifiDirectTransferManager? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiDirectTransferManager(context) else null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    /** Non-null while a file send/receive is in flight; null the rest of the time. */
+    private val _transferStatus = MutableStateFlow<String?>(null)
+    val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
+
+    val fileTransferAvailable: Boolean get() = transferManager != null
 
     /** After the Noise handshake finishes, both sides immediately exchange one more
      *  encrypted message — their pseudonym — before the chat is considered open. */
@@ -115,21 +155,96 @@ class BleChatController(
         val connection = connections[address] ?: return
         if (connection.step != HandshakeStep.READY) return
 
-        val ciphertext = connection.session.encryptMessage(text)
-        if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
+        sendEnvelope(address, connection, JSONObject().put("k", "txt").put("t", text).toString())
+        appendMessage(ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis()))
+    }
 
-        val current = _state.value
-        if (current is ChatUiState.Chatting) {
-            val message = ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis())
-            _state.value = current.copy(messages = current.messages + message)
-            persistIfSaved(current.remotePeerId, message)
+    /** Sends [bytes] to the active peer over Wi-Fi Direct once [transferManager] confirms the
+     *  peer joined; the BLE channel only ever carries the small offer envelope (network name/
+     *  passphrase/metadata), never the file itself. No-op if a transfer is already in flight,
+     *  [fileTransferAvailable] is false, or [bytes] exceeds [MAX_TRANSFER_FILE_BYTES]. */
+    fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
+        val manager = transferManager ?: return
+        val address = activeAddress ?: return
+        val connection = connections[address] ?: return
+        if (connection.step != HandshakeStep.READY) return
+        if (_transferStatus.value != null) return
+        if (bytes.size > MAX_TRANSFER_FILE_BYTES) return
+
+        val remotePeerId = connection.session.remotePeerId()
+        val transferKey = connection.session.deriveTransferKey()
+        _transferStatus.value = "Sending $fileName…"
+        scope.launch {
+            val result = manager.hostAndSendFile(bytes, transferKey) { credentials ->
+                sendEnvelope(address, connection, encodeFileOffer(credentials, fileName, mimeType, bytes.size.toLong()))
+            }
+            _transferStatus.value = null
+            result.onSuccess {
+                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                appendMessage(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+            }
         }
     }
+
+    private fun receiveFile(connection: Connection, offer: FileOffer) {
+        val manager = transferManager
+        if (manager == null || _transferStatus.value != null || offer.sizeBytes > MAX_TRANSFER_FILE_BYTES) return
+
+        val remotePeerId = connection.session.remotePeerId()
+        val transferKey = connection.session.deriveTransferKey()
+        _transferStatus.value = "Receiving ${offer.fileName}…"
+        scope.launch {
+            val result = manager.joinAndReceiveFile(offer.credentials, transferKey, offer.sizeBytes)
+            _transferStatus.value = null
+            result.onSuccess { bytes ->
+                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                appendMessage(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+            }
+        }
+    }
+
+    private fun fileMessage(fromMe: Boolean, fileName: String, mimeType: String, sizeBytes: Long, localPath: String) = ChatMessage(
+        fromMe = fromMe,
+        text = "",
+        atMillis = System.currentTimeMillis(),
+        kind = MessageKind.FILE,
+        fileName = fileName,
+        mimeType = mimeType,
+        sizeBytes = sizeBytes,
+        localPath = localPath,
+    )
+
+    private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
+
+    private fun sendEnvelope(address: String, connection: Connection, json: String) {
+        val ciphertext = connection.session.encryptMessage(json)
+        if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
+    }
+
+    private data class FileOffer(val credentials: WfdCredentials, val fileName: String, val mimeType: String, val sizeBytes: Long)
+
+    private fun encodeFileOffer(credentials: WfdCredentials, fileName: String, mimeType: String, sizeBytes: Long): String =
+        JSONObject()
+            .put("k", "wfd")
+            .put("ssid", credentials.networkName)
+            .put("pass", credentials.passphrase)
+            .put("name", fileName)
+            .put("mime", mimeType)
+            .put("size", sizeBytes)
+            .toString()
 
     /** Chat history is only ever written to disk for peers the user chose to save as a
      *  contact - see [ChatHistoryStore]. */
     private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
         if (contactStore.isSaved(remotePeerId)) historyStore.append(remotePeerId, message)
+    }
+
+    private fun appendMessage(message: ChatMessage) {
+        val current = _state.value
+        if (current is ChatUiState.Chatting) {
+            _state.value = current.copy(messages = current.messages + message)
+            persistIfSaved(current.remotePeerId, message)
+        }
     }
 
     fun endActiveConnection(reason: String) {
@@ -140,6 +255,7 @@ class BleChatController(
             connections.remove(address)
         }
         activeAddress = null
+        _transferStatus.value = null
         _state.value = ChatUiState.Ended(reason)
         if (browsing) {
             peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
@@ -230,12 +346,18 @@ class BleChatController(
                 )
             }
             HandshakeStep.READY -> {
-                val text = connection.session.decryptMessage(frame)
-                val message = ChatMessage(fromMe = false, text = text, atMillis = System.currentTimeMillis())
-                val current = _state.value
-                if (current is ChatUiState.Chatting) {
-                    _state.value = current.copy(messages = current.messages + message)
-                    persistIfSaved(current.remotePeerId, message)
+                val envelope = JSONObject(connection.session.decryptMessage(frame))
+                when (envelope.getString("k")) {
+                    "wfd" -> receiveFile(
+                        connection,
+                        FileOffer(
+                            credentials = WfdCredentials(networkName = envelope.getString("ssid"), passphrase = envelope.getString("pass")),
+                            fileName = envelope.getString("name"),
+                            mimeType = envelope.getString("mime"),
+                            sizeBytes = envelope.getLong("size"),
+                        ),
+                    )
+                    else -> appendMessage(ChatMessage(fromMe = false, text = envelope.getString("t"), atMillis = System.currentTimeMillis()))
                 }
             }
         }

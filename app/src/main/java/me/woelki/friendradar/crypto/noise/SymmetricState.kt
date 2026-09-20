@@ -47,6 +47,11 @@ internal class SymmetricState(protocolName: ByteArray) {
     }
 
     fun handshakeHash(): ByteArray = h
+
+    /** Derives an additional 32-byte secret from the post-handshake chaining key, for uses
+     *  outside the Noise transport messages themselves (e.g. a side-channel file transfer
+     *  key) — safe to call any number of times after [split], since it never mutates [ck]. */
+    fun deriveKey(info: ByteArray): ByteArray = Primitives.hkdf(ck, info, 2)[0]
 }
 
 private operator fun <T> List<T>.component1() = this[0]
