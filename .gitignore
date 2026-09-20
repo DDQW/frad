@@ -12,3 +12,9 @@ local.properties
 *.keystore
 *.jks
 !gradle/wrapper/gradle-wrapper.jar
+
+# p2p-go (M4): the gomobile .aar lands under p2p-go/build/, already covered by
+# build/ above; these are local build/run artifacts of the Go module itself.
+p2p-go/bootstrap
+p2p-go/bootstrap.exe
+p2p-go/bootstrap_identity.key

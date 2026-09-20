@@ -3,6 +3,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// M4's wide-range layer (p2p-go/) is built by gomobile into an Android .aar,
+// entirely outside this module's normal build path: `./gradlew test`/
+// `assembleDebug` must keep working with no Go/gomobile/NDK installed at all.
+// When the .aar hasn't been built, `kotlin-p2p-stub` compiles in its place -
+// see wideradius/WideRangeNode.kt in each variant for why the two are
+// source-compatible. Run `./gradlew gomobileBind` (Go + gomobile + Android
+// NDK required - see p2p-go/README.md) to produce the real .aar.
+val p2pAarFile = rootProject.file("p2p-go/build/p2pgo.aar")
+val hasP2pGoAar = p2pAarFile.exists()
+
 android {
     namespace = "me.woelki.friendradar"
     compileSdk = 36
@@ -18,10 +28,14 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 5
-        versionName = "0.3.1"
+        versionCode = 6
+        versionName = "0.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    sourceSets.getByName("main") {
+        kotlin.srcDir(if (hasP2pGoAar) "src/main/kotlin-p2p-real" else "src/main/kotlin-p2p-stub")
     }
 
     buildTypes {
@@ -73,6 +87,10 @@ dependencies {
     // varies by Android version/OEM.
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
+    // M4 wide-range layer: only present once `./gradlew gomobileBind` has produced
+    // p2p-go/build/p2pgo.aar (see the comment above the `android {}` block).
+    if (hasP2pGoAar) implementation(files(p2pAarFile))
+
     testImplementation("junit:junit:4.13.2")
     // Local unit tests run against the real JDK, not a device, so the Android SDK's org.json
     // classes (which BleChatController/ChatHistoryStore use) are stub-only there; this real
@@ -84,4 +102,23 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// Builds p2p-go/node into p2p-go/build/p2pgo.aar via `gomobile bind`. Never a
+// dependency of `test`/`assembleDebug` (see the comment above the `android {}`
+// block) - run it explicitly, then re-run a normal build to pick up the .aar.
+// Requires Go 1.22+, `go install golang.org/x/mobile/cmd/gomobile@latest` +
+// `gomobile init`, and the Android NDK (ANDROID_HOME/ANDROID_NDK_HOME set).
+tasks.register<Exec>("gomobileBind") {
+    workingDir = rootProject.projectDir
+    inputs.dir("p2p-go/node")
+    inputs.file("p2p-go/go.mod")
+    outputs.file(p2pAarFile)
+    commandLine(
+        "gomobile", "bind",
+        "-target=android", "-androidapi=26",
+        "-javapkg=me.woelki.friendradar.p2pgo",
+        "-o", p2pAarFile.path,
+        "./p2p-go/node",
+    )
 }
