@@ -11,6 +11,7 @@ local.properties
 *.aab
 *.keystore
 *.jks
+keystore.properties
 !gradle/wrapper/gradle-wrapper.jar
 
 # p2p-go (M4): the gomobile .aar lands under p2p-go/build/, already covered by

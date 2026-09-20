@@ -1,7 +1,32 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// M6: an optional real release-signing key, so APKs published from GitHub Releases
+// (not F-Droid's own build - see the "F-Droid release packaging" README section)
+// can eventually move off the auto-generated debug keystore without ever committing
+// a real key to this repo. Supplied either via a local, gitignored
+// `keystore.properties` (see `keystore.properties.sample`) or via environment
+// variables of the same names (how CI injects its secrets - see
+// `.github/workflows/release.yml`); either source left unset just means "no real
+// key yet," and the release build type falls back to debug signing exactly as
+// before.
+val releaseKeystoreProperties = Properties().apply {
+    val propsFile = rootProject.file("keystore.properties")
+    if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+}
+fun releaseSigningValue(propertyKey: String, envVar: String): String? =
+    System.getenv(envVar)?.takeIf { it.isNotBlank() } ?: releaseKeystoreProperties.getProperty(propertyKey)
+
+val releaseStoreFile = releaseSigningValue("storeFile", "FRAD_RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("storePassword", "FRAD_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("keyAlias", "FRAD_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("keyPassword", "FRAD_RELEASE_KEY_PASSWORD")
+val hasReleaseSigningConfig =
+    releaseStoreFile != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
 
 // M4's wide-range layer (p2p-go/) is built by gomobile into an Android .aar,
 // entirely outside this module's normal build path: `./gradlew test`/
@@ -28,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 9
-        versionName = "0.3.5"
+        versionCode = 10
+        versionName = "0.3.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -38,16 +63,27 @@ android {
         kotlin.srcDir(if (hasP2pGoAar) "src/main/kotlin-p2p-real" else "src/main/kotlin-p2p-stub")
     }
 
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // No dedicated release key yet, so sign with the auto-generated debug keystore -
-            // this keeps CI able to produce an installable APK on every build without any
-            // signing secrets to manage. F-Droid signs its own build with its own key
-            // regardless; swap this for a real release key before any other distribution
-            // channel (e.g. Play Store) is added.
-            signingConfig = signingConfigs.getByName("debug")
+            // Sign with the real release key once one is configured (see the
+            // `hasReleaseSigningConfig` block above); otherwise fall back to the
+            // auto-generated debug keystore, which keeps CI able to produce an
+            // installable APK with no signing secrets to manage. F-Droid signs its
+            // own build with its own key regardless of either of these.
+            signingConfig = if (hasReleaseSigningConfig) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 

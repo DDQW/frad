@@ -32,7 +32,22 @@ jobs:
       - name: Unit tests
         run: ./gradlew test --no-daemon
 
+      # Optional: only present once a maintainer has generated a real release key
+      # and added it as repo secrets (see keystore.properties.sample). Until then
+      # this step is a no-op and the release build falls back to debug signing,
+      # exactly as before - see app/build.gradle.kts.
+      - name: Decode release keystore
+        if: ${{ secrets.FRAD_RELEASE_KEYSTORE_BASE64 != '' }}
+        env:
+          FRAD_RELEASE_KEYSTORE_BASE64: ${{ secrets.FRAD_RELEASE_KEYSTORE_BASE64 }}
+        run: echo "$FRAD_RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+
       - name: Assemble release APK
+        env:
+          FRAD_RELEASE_STORE_FILE: ${{ secrets.FRAD_RELEASE_KEYSTORE_BASE64 != '' && format('{0}/release.keystore', runner.temp) || '' }}
+          FRAD_RELEASE_STORE_PASSWORD: ${{ secrets.FRAD_RELEASE_STORE_PASSWORD }}
+          FRAD_RELEASE_KEY_ALIAS: ${{ secrets.FRAD_RELEASE_KEY_ALIAS }}
+          FRAD_RELEASE_KEY_PASSWORD: ${{ secrets.FRAD_RELEASE_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK

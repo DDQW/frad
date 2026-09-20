@@ -6,9 +6,10 @@ How it works:
 * Nearby (Bluetooth LE, no internet needed): your phone and theirs discover
   each other directly over Bluetooth. Matching who you chat with happens on
   your own device.
-* Wider range (planned): find people within a chosen radius over the internet,
-  using an open, decentralized discovery protocol — not a company-owned
-  matchmaking service.
+* Wider range: find people within a chosen radius over the internet, using an
+  open, decentralized discovery protocol (go-libp2p) — not a company-owned
+  matchmaking service. Anyone can run a bootstrap/relay node, and the node
+  list is user-configurable rather than hard-locked to one operator.
 
 Privacy and safety by design:
 

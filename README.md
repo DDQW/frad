@@ -107,8 +107,25 @@ you have it, or ask in an issue — the summary above is the durable version.
   (`safety/DeviceFingerprint.kt`, derived from `Settings.Secure.ANDROID_ID`) and `BlockList`
   matches on either it or the long-term peer id, so someone who clears app data or reinstalls to
   shake off a block is still caught as long as it's the same physical device. Not yet done:
-  wide-range Sybil/spam resistance (e.g. proof-of-work — see `safety/Cooldown.kt`), bootstrap/relay
-  DoS protection, and F-Droid release packaging (M6).
+  wide-range Sybil/spam resistance (e.g. proof-of-work — see `safety/Cooldown.kt`) and
+  bootstrap/relay DoS protection.
+- **M6 — F-Droid release packaging**: in-repo groundwork done, submission not started. F-Droid
+  builds each app from source and signs it with F-Droid's own key, so nothing here is required
+  for that build itself to work — the two things this milestone actually covers are (1) making
+  this repo's *own* GitHub-Releases APK signable with a real key instead of the Gradle debug
+  keystore, and (2) making sure the build is one F-Droid's reproducible-builds pipeline can
+  verify. So far: `app/build.gradle.kts` reads an optional release signing key from a
+  gitignored `keystore.properties` (see `keystore.properties.sample`) or equivalently-named env
+  vars, falling back to debug signing when neither is present (which is still true today — no
+  real key has been generated yet); `.github/workflows/release.yml` decodes and wires that key
+  in from repo secrets when configured. Every Gradle/Kotlin/AndroidX/Bouncy Castle dependency
+  version here is already pinned exactly (no `+`/dynamic ranges), and `p2p-go/go.mod` +
+  `go.sum` pin the Go side the same way, both of which reproducible builds need. The
+  `metadata/en-US/` fastlane-format description F-Droid's listing uses already exists. Not yet
+  done: actually generating and safely storing a maintainer release key, submitting a build
+  recipe/metadata PR to the separate [fdroiddata](https://gitlab.com/fdroid/fdroiddata) repo,
+  and getting a real F-Droid reproducible-build pass (their `gomobile`/NDK toolchain pin for
+  `p2p-go/` hasn't been checked against what F-Droid's build server provides).
 
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
@@ -119,10 +136,12 @@ Every push to `master` is built and republished as the ["latest"
 release](../../releases/tag/latest) on the Releases page — grab the APK there
 if you just want to install it without building anything. Tagged versions
 (`vX.Y.Z`) get their own numbered release the same way. These builds are
-currently signed with the Gradle-generated debug key (see `app/build.gradle.kts`)
-rather than a dedicated release key, since there's no other distribution
-channel yet — that's fine for installing directly, but will change before this
-ships anywhere like F-Droid or Play.
+currently signed with the Gradle-generated debug key rather than a dedicated
+release key, since no maintainer key has been generated yet — that's fine for
+installing directly, but will change once one is (see `app/build.gradle.kts`
+and `keystore.properties.sample`, part of the M6 groundwork above). F-Droid's
+own listing, once it exists, signs with F-Droid's key regardless of any of
+this.
 
 ## Building
 
