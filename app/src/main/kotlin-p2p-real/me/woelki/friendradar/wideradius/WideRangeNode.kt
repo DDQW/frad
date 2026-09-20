@@ -64,6 +64,11 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
         }
     }
 
+    /** Starts the libp2p host and DHT bootstrap only — callers drive
+     *  [startAdvertising]/[findPeersOnce] themselves (see
+     *  [me.woelki.friendradar.wideradius.WideRangeChatController], which
+     *  re-runs [findPeersOnce] on an interval the way BLE scanning is
+     *  continuous, since a single DHT lookup is a one-shot round). */
     suspend fun start(config: WideRangeConfig): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val goConfig = GoConfig().apply {
@@ -74,8 +79,6 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
             val host = GoNode.newHost(goConfig, goPeerFoundListener, goIncomingStreamListener)
             host.start()
             goHost = host
-            host.startAdvertising(config.rendezvousTopic)
-            host.findPeersOnce(config.rendezvousTopic)
         }
     }
 

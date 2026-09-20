@@ -30,9 +30,34 @@ class Profile(context: Context) {
 
     private fun defaultPseudonym(): String = "Guest${Random.nextInt(1000, 10000)}"
 
+    /** Set only via [me.woelki.friendradar.wideradius.Geohash.encode] truncated to
+     *  [me.woelki.friendradar.wideradius.Geohash.MAX_PRECISION] or coarser (or typed in
+     *  directly) — the raw coordinate it may have been derived from is never itself
+     *  stored. Null until the user opts into the wide-range layer at all. */
+    var coarseGeohash: String?
+        get() = prefs.getString(KEY_GEOHASH, null)
+        set(value) { prefs.edit().putString(KEY_GEOHASH, value?.trim()?.lowercase()?.ifEmpty { null }).apply() }
+
+    /** How wide an area [coarseGeohash] should be truncated to when deriving a wide-range
+     *  DHT rendezvous topic — see [me.woelki.friendradar.wideradius.Geohash.precisionForRadiusKm]. */
+    var searchRadiusKm: Double
+        get() = prefs.getFloat(KEY_RADIUS_KM, DEFAULT_RADIUS_KM.toFloat()).toDouble()
+        set(value) { prefs.edit().putFloat(KEY_RADIUS_KM, value.toFloat()).apply() }
+
+    /** The user-configurable wide-range bootstrap/relay node list (each entry a full
+     *  multiaddr, e.g. from a [p2p-go/cmd/bootstrap][me.woelki.friendradar.wideradius] operator) —
+     *  never shipped with real defaults baked in, see the root README. Empty by default. */
+    var bootstrapNodes: List<String>
+        get() = prefs.getString(KEY_BOOTSTRAP_NODES, null)?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        set(value) { prefs.edit().putString(KEY_BOOTSTRAP_NODES, value.joinToString("\n")).apply() }
+
     companion object {
         private const val PREFS_FILE = "friendradar_profile"
         private const val KEY_PSEUDONYM = "pseudonym"
+        private const val KEY_GEOHASH = "coarse_geohash"
+        private const val KEY_RADIUS_KM = "search_radius_km"
+        private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
+        private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
 
         /** Short, stable suffix derived from a peer's long-term id, so that two people who

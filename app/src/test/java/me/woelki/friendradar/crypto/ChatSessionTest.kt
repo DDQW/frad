@@ -89,6 +89,19 @@ class ChatSessionTest {
     }
 
     @Test
+    fun `different transfer key info strings derive different, non-colliding keys`() {
+        val h = handshake()
+
+        val wfdKey = h.alice.deriveTransferKey("frad-wfd-media-v1")
+        val wideKey = h.alice.deriveTransferKey("frad-wide-transfer-v1")
+
+        assertNotEquals(String(wfdKey), String(wideKey))
+        // Still identical on both sides for a given info string.
+        assertArrayEquals(wfdKey, h.bob.deriveTransferKey("frad-wfd-media-v1"))
+        assertArrayEquals(wideKey, h.bob.deriveTransferKey("frad-wide-transfer-v1"))
+    }
+
+    @Test
     fun `two independent handshakes between the same identities yield unlinkable ciphertexts`() {
         // Ephemeral keys must make each handshake's transport keys different, even for
         // repeat conversations between the same two static identities (forward secrecy).

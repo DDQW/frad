@@ -37,6 +37,8 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
  *  type must exist so [me.woelki.friendradar.wideradius.WideRangeChatController]
  *  (compiled against either variant) type-checks. */
 class WideRangeByteStream internal constructor() {
+    val remotePeerId: String = ""
+
     suspend fun write(bytes: ByteArray): Result<Unit> = unreachable()
     suspend fun readExactly(length: Int): Result<ByteArray> = unreachable()
     fun close() = Unit

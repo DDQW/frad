@@ -69,12 +69,16 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
     }
 
     /** A 32-byte secret independent of the chat's own transport keys, for encrypting a
-     *  side-channel Wi-Fi Direct file transfer (see [me.woelki.friendradar.crypto.TransferCipher])
-     *  instead of reusing the chat's [encryptMessage]/[decryptMessage] nonce counter, which two
-     *  concurrent transports incrementing independently could otherwise collide on. Identical on
-     *  both sides, since it's derived from the mutually-authenticated handshake transcript. */
-    fun deriveTransferKey(): ByteArray {
+     *  side-channel file transfer (see [me.woelki.friendradar.crypto.TransferCipher]) instead of
+     *  reusing the chat's [encryptMessage]/[decryptMessage] nonce counter, which two concurrent
+     *  transports incrementing independently could otherwise collide on. Identical on both sides,
+     *  since it's derived from the mutually-authenticated handshake transcript.
+     *
+     *  [info] must be distinct per file-transfer transport (Wi-Fi Direct vs. wide-range) sharing
+     *  this same handshake, so the two never derive the same key from one conversation - see
+     *  [me.woelki.friendradar.wideradius.WideRangeChatController]'s use of a different [info]. */
+    fun deriveTransferKey(info: String = "frad-wfd-media-v1"): ByteArray {
         check(isReady) { "Handshake not complete" }
-        return handshake.deriveKey("frad-wfd-media-v1".toByteArray(StandardCharsets.US_ASCII))
+        return handshake.deriveKey(info.toByteArray(StandardCharsets.US_ASCII))
     }
 }

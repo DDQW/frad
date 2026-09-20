@@ -14,6 +14,11 @@ import me.woelki.friendradar.p2pgo.node.Stream as GoStream
  */
 class WideRangeByteStream internal constructor(private val goStream: GoStream) {
 
+    /** The libp2p peer id (transport-level, rotating per session) of whoever is on the
+     *  other end of this stream — distinct from [me.woelki.friendradar.crypto.ChatSession.remotePeerId],
+     *  the app-level long-term identity only known once the Noise handshake completes. */
+    val remotePeerId: String get() = goStream.remotePeerId()
+
     suspend fun write(bytes: ByteArray): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching { goStream.write(bytes) }.map { Unit }
     }
