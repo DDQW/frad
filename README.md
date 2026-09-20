@@ -1,0 +1,92 @@
+# FRAD
+
+A GPS/Bluetooth-based random chat app for meeting people nearby — fully
+peer-to-peer, no account, no company-run backend, 100% free and open source
+software, built for distribution on [F-Droid](https://f-droid.org).
+
+## Why P2P instead of a normal server-backed app?
+
+Two strangers' phones can't just find each other's IP address with zero
+infrastructure — but "zero infrastructure" and "no *company-owned* backend"
+are different things. FRAD uses two discovery layers:
+
+1. **Local (implemented, M1)** — Bluetooth LE advertising/scanning. No
+   internet, no server of any kind, works within roughly 10–100m. This is the
+   layer the current code implements.
+2. **Wide-range / GPS-radius (planned, M4)** — an open, decentralized
+   discovery protocol (go-libp2p, following the same proven approach the
+   [Berty](https://github.com/berty/berty) messenger uses on mobile) so you
+   can find people within a chosen radius over the internet. No single party
+   operates or controls this — anyone can run a bootstrap/relay node, and the
+   node list is user-configurable rather than hard-locked, which is also what
+   keeps this out of F-Droid's "Non-Free/Tethered Network Services"
+   anti-feature categories.
+
+Every chat is end-to-end encrypted (Noise_XX handshake, X25519 + ChaCha20-
+Poly1305) directly between the two phones, regardless of which discovery layer
+found them.
+
+## Privacy & safety design
+
+- No account, phone number, or email, ever. Identity is a random keypair
+  generated on-device.
+- Exact GPS coordinates are never transmitted or stored remotely — the local
+  layer never touches GPS at all, and the planned wide layer only ever shares
+  a coarse geohash cell.
+- "Available to chat" is an explicit opt-in toggle, off by default, not a
+  silent background broadcast.
+- The rotating id you're discovered by is *not* your long-term identity key —
+  a peer only learns who they actually matched with once an encrypted session
+  is already established with them specifically, so passively scanning for
+  nearby devices can't be used to build a tracking profile.
+- On-device block list and report flow (there's no central authority to
+  report *to*, so "report" = immediately block + keep a local note of why).
+
+See the full milestone/architecture rationale in the original design doc if
+you have it, or ask in an issue — the summary above is the durable version.
+
+## Project status
+
+- **M0 — scaffold**: done (this commit).
+- **M1 — local BLE chat MVP**: implemented, and **builds cleanly** —
+  `./gradlew test` (18 tests: Noise_XX handshake round-trip/tamper-detection,
+  message framing, random matching, cooldown) and `./gradlew assembleDebug`
+  both pass. What's *not* yet verified is the real BLE radio path — that
+  needs two physical phones (BLE doesn't work realistically in the emulator):
+  install the debug APK on both, toggle "Become visible nearby" on both, then
+  "Chat with someone nearby" on one, and see whether discovery/pairing/chat
+  actually works end-to-end over real Bluetooth hardware.
+- M2–M6 (persistence/UX polish, Wi-Fi Direct media transfer, the wide-range
+  DHT layer, abuse hardening, F-Droid release packaging): not started.
+
+## Building
+
+Requires JDK 17+ and the Android SDK (easiest: open the project root in a
+recent Android Studio and let it configure both).
+
+```bash
+./gradlew test          # crypto + pairing + framing unit tests, no device needed
+./gradlew assembleDebug # builds app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install the debug APK on two physical Android phones (API 26+) to test the
+actual BLE discovery/chat flow — grant the Bluetooth permission prompt on
+both, toggle "Become visible nearby" on both, then "Chat with someone nearby"
+on one.
+
+## Project layout
+
+- `crypto/` — identity keypair + the Noise_XX end-to-end encryption handshake
+  and session. Transport-agnostic; reused by the wide-range layer later.
+- `ble/` — BLE presence advertising/scanning (`BlePeripheralServer`,
+  `BleCentralClient`), message fragmentation over the GATT MTU (`Framing`),
+  and `BleChatController`, which wires all of the above plus pairing/safety
+  into the state machine the UI drives.
+- `pairing/` — `RandomMatcher`, the on-device "pick someone nearby" logic.
+- `safety/` — block list, report flow, request cooldown/rate-limiting.
+- `ui/` — Jetpack Compose screens + the `ChatViewModel` that bridges to
+  `BleChatController`.
+
+## License
+
+GPLv3 — see [LICENSE](LICENSE).

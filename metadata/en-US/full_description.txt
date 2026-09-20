@@ -1,0 +1,24 @@
+FRAD lets you strike up a random, anonymous chat with someone physically
+near you — no account, no phone number, no company-run server matching you up.
+
+How it works:
+
+* Nearby (Bluetooth LE, no internet needed): your phone and theirs discover
+  each other directly over Bluetooth. Matching who you chat with happens on
+  your own device.
+* Wider range (planned): find people within a chosen radius over the internet,
+  using an open, decentralized discovery protocol — not a company-owned
+  matchmaking service.
+
+Privacy and safety by design:
+
+* No account, phone number, or email — ever.
+* Your exact GPS coordinates are never sent anywhere, not even to a matched
+  peer.
+* "Available to chat" is an opt-in toggle you turn on, not something running
+  silently in the background.
+* Chats are end-to-end encrypted between the two phones.
+* You can block or report anyone you're matched with, entirely on-device.
+
+100% free and open source software. No ads, no tracking, no proprietary
+network services.
