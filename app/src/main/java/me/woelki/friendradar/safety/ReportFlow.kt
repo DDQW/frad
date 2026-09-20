@@ -12,8 +12,8 @@ import android.content.Context
 class ReportFlow(context: Context, private val blockList: BlockList = BlockList(context)) {
     private val prefs = context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
 
-    fun report(peerId: String, reason: String) {
-        blockList.block(peerId)
+    fun report(peerId: String, deviceFingerprint: String, reason: String) {
+        blockList.block(peerId, deviceFingerprint)
         prefs.edit().putString(peerId, reason).apply()
     }
 

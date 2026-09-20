@@ -28,6 +28,11 @@ sealed interface ChatUiState {
 
     data class Connecting(val target: me.woelki.friendradar.pairing.NearbyPeer) : ChatUiState
     data object Handshaking : ChatUiState
-    data class Chatting(val remotePeerId: String, val remotePseudonym: String, val messages: List<ChatMessage>) : ChatUiState
+    data class Chatting(
+        val remotePeerId: String,
+        val remoteDeviceFingerprint: String,
+        val remotePseudonym: String,
+        val messages: List<ChatMessage>,
+    ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

@@ -102,7 +102,13 @@ you have it, or ask in an issue — the summary above is the durable version.
   (a Go test, not a device test): DHT rendezvous and a relay-transparent
   stream round trip both work between three in-process libp2p hosts (see
   `p2p-go/node`'s test suite).
-- M5–M6 (abuse hardening, F-Droid release packaging): not started.
+- **M5 — abuse hardening**: in progress. So far: blocking is now resilient to identity resets —
+  right after the Noise handshake, both sides also exchange a hashed, per-device fingerprint
+  (`safety/DeviceFingerprint.kt`, derived from `Settings.Secure.ANDROID_ID`) and `BlockList`
+  matches on either it or the long-term peer id, so someone who clears app data or reinstalls to
+  shake off a block is still caught as long as it's the same physical device. Not yet done:
+  wide-range Sybil/spam resistance (e.g. proof-of-work — see `safety/Cooldown.kt`), bootstrap/relay
+  DoS protection, and F-Droid release packaging (M6).
 
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
@@ -194,8 +200,9 @@ in and a reachable bootstrap node configured in Profile on both phones.
 - `data/` — `MediaFileStore`, on-device storage for files sent/received over
   Wi-Fi Direct or wide-range, one subdirectory per peer; exposed to other
   apps only via a `FileProvider` when the user explicitly opens a received file.
-- `safety/` — block list, report flow, request cooldown/rate-limiting;
-  transport-agnostic (keyed by the Noise-derived long-term peer id), used
+- `safety/` — block list, report flow, request cooldown/rate-limiting, and (M5)
+  `DeviceFingerprint`, a hashed `ANDROID_ID`-derived id exchanged alongside the peer id so a
+  block survives the other side resetting their identity keypair; transport-agnostic, used
   identically by both controllers.
 - `ui/` — Jetpack Compose screens + the `ChatViewModel`, which now holds one
   `BleChatController` and one `WideRangeChatController` and routes between

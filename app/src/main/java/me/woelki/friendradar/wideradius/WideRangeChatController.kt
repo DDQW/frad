@@ -37,6 +37,7 @@ import me.woelki.friendradar.pairing.SignalStrength
 import me.woelki.friendradar.profile.Profile
 import me.woelki.friendradar.safety.BlockList
 import me.woelki.friendradar.safety.Cooldown
+import me.woelki.friendradar.safety.DeviceFingerprint
 import me.woelki.friendradar.safety.ReportFlow
 import org.json.JSONObject
 
@@ -69,6 +70,7 @@ class WideRangeChatController(
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
+    private val deviceFingerprint = DeviceFingerprint.compute(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -80,15 +82,16 @@ class WideRangeChatController(
 
     override val fileTransferAvailable: Boolean get() = WideRangeNode.isSupported
 
-    /** After the Noise handshake finishes, both sides immediately exchange one more
-     *  encrypted message — their pseudonym — before the chat is considered open;
-     *  identical sequencing to [me.woelki.friendradar.ble.BleChatController]. */
-    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_PROFILE, READY }
+    /** After the Noise handshake finishes, both sides immediately exchange two more encrypted
+     *  messages — their device fingerprint, then their pseudonym — before the chat is considered
+     *  open; identical sequencing to [me.woelki.friendradar.ble.BleChatController]. */
+    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_DEVICE_ID, EXPECT_PROFILE, READY }
 
     private class Connection(val session: ChatSession, val isOutbound: Boolean, val stream: WideRangeByteStream) {
         var step: HandshakeStep = if (session.isReady) HandshakeStep.READY
             else if (isOutbound) HandshakeStep.EXPECT_MESSAGE_2 else HandshakeStep.EXPECT_MESSAGE_1
         var pendingIncomingOffer: FileOffer? = null
+        var remoteDeviceFingerprint: String? = null
 
         /** Guards writes to [stream]: the read loop (handshake responses, profile exchange)
          *  and [sendMessage]/[sendFile] (launched from the UI thread) can both want to write
@@ -309,13 +312,13 @@ class WideRangeChatController(
 
     override fun blockActivePeer() {
         val current = _state.value
-        if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId)
+        if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint)
         endActiveConnection("blocked")
     }
 
     override fun reportActivePeer(reason: String) {
         val current = _state.value
-        if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, reason)
+        if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, reason)
         endActiveConnection("reported")
     }
 
@@ -370,11 +373,22 @@ class WideRangeChatController(
             HandshakeStep.EXPECT_MESSAGE_2 -> {
                 val message3 = connection.session.completeHandshake(frame)
                 sendRaw(connection, message3)
-                advanceToProfileExchange(connection)
+                advanceToDeviceIdExchange(connection)
             }
             HandshakeStep.EXPECT_MESSAGE_3 -> {
                 connection.session.finishHandshake(frame)
-                advanceToProfileExchange(connection)
+                advanceToDeviceIdExchange(connection)
+            }
+            HandshakeStep.EXPECT_DEVICE_ID -> {
+                val remoteFingerprint = connection.session.decryptMessage(frame)
+                if (blockList.isBlocked(remoteFingerprint)) {
+                    connection.stream.close()
+                    if (activeConnection === connection) endActiveConnection("blocked peer")
+                    return
+                }
+                connection.remoteDeviceFingerprint = remoteFingerprint
+                connection.step = HandshakeStep.EXPECT_PROFILE
+                sendEncrypted(connection, profile.pseudonym)
             }
             HandshakeStep.EXPECT_PROFILE -> {
                 val remotePseudonym = connection.session.decryptMessage(frame)
@@ -382,6 +396,7 @@ class WideRangeChatController(
                 val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
                     remotePeerId = remotePeerId,
+                    remoteDeviceFingerprint = connection.remoteDeviceFingerprint!!,
                     remotePseudonym = remotePseudonym,
                     messages = if (contactStore.isSaved(remotePeerId)) historyStore.messagesFor(remotePeerId) else emptyList(),
                 )
@@ -403,17 +418,18 @@ class WideRangeChatController(
     /** The Noise handshake is done and transport keys are ready. Before showing any chat UI,
      *  check the peer's now-revealed long-term identity against the block list - discovery only
      *  ever exposes the rotating libp2p peer id, so this is the first point blocking can be
-     *  enforced - and only then trade pseudonyms, so a blocked peer never learns ours. Identical
-     *  reasoning to [me.woelki.friendradar.ble.BleChatController.advanceToProfileExchange]. */
-    private suspend fun advanceToProfileExchange(connection: Connection) {
+     *  enforced - then trade device fingerprints for a second, identity-independent block check
+     *  (M5), and only once both pass, trade pseudonyms, so a blocked peer never learns ours.
+     *  Identical reasoning to [me.woelki.friendradar.ble.BleChatController.advanceToDeviceIdExchange]. */
+    private suspend fun advanceToDeviceIdExchange(connection: Connection) {
         val remotePeerId = connection.session.remotePeerId()
         if (blockList.isBlocked(remotePeerId)) {
             connection.stream.close()
             if (activeConnection === connection) endActiveConnection("blocked peer")
             return
         }
-        connection.step = HandshakeStep.EXPECT_PROFILE
-        sendEncrypted(connection, profile.pseudonym)
+        connection.step = HandshakeStep.EXPECT_DEVICE_ID
+        sendEncrypted(connection, deviceFingerprint)
     }
 
     // ---- framing primitives (length-prefixed, same wire format as ble/Framing.kt, but a whole

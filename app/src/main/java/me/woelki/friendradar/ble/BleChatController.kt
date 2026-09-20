@@ -26,6 +26,7 @@ import me.woelki.friendradar.pairing.SignalStrength
 import me.woelki.friendradar.profile.Profile
 import me.woelki.friendradar.safety.BlockList
 import me.woelki.friendradar.safety.Cooldown
+import me.woelki.friendradar.safety.DeviceFingerprint
 import me.woelki.friendradar.safety.ReportFlow
 import me.woelki.friendradar.wifidirect.WfdCredentials
 import me.woelki.friendradar.wifidirect.WifiDirectTransferManager
@@ -50,6 +51,7 @@ class BleChatController(
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
+    private val deviceFingerprint = DeviceFingerprint.compute(context)
 
     private val peripheral = BlePeripheralServer(context, this)
     private val central = BleCentralClient(context, this)
@@ -71,13 +73,16 @@ class BleChatController(
 
     override val fileTransferAvailable: Boolean get() = transferManager != null
 
-    /** After the Noise handshake finishes, both sides immediately exchange one more
-     *  encrypted message — their pseudonym — before the chat is considered open. */
-    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_PROFILE, READY }
+    /** After the Noise handshake finishes, both sides immediately exchange two more encrypted
+     *  messages — their device fingerprint, then their pseudonym — before the chat is considered
+     *  open. The fingerprint round trip lets each side re-check the other against [blockList] by
+     *  device (not just by identity key) before revealing anything human-readable; see M5. */
+    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_DEVICE_ID, EXPECT_PROFILE, READY }
 
     private class Connection(val session: ChatSession, val isOutbound: Boolean) {
         var step: HandshakeStep = if (session.isReady) HandshakeStep.READY
         else if (isOutbound) HandshakeStep.EXPECT_MESSAGE_2 else HandshakeStep.EXPECT_MESSAGE_1
+        var remoteDeviceFingerprint: String? = null
     }
 
     // BLE callbacks (peripheral GATT server, central GATT client, scan results) can each
@@ -241,13 +246,13 @@ class BleChatController(
 
     override fun blockActivePeer() {
         val current = _state.value
-        if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId)
+        if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint)
         endActiveConnection("blocked")
     }
 
     override fun reportActivePeer(reason: String) {
         val current = _state.value
-        if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, reason)
+        if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, reason)
         endActiveConnection("reported")
     }
 
@@ -308,11 +313,24 @@ class BleChatController(
             HandshakeStep.EXPECT_MESSAGE_2 -> {
                 val message3 = connection.session.completeHandshake(frame)
                 central.sendFrame(deviceAddress, message3)
-                advanceToProfileExchange(deviceAddress, connection)
+                advanceToDeviceIdExchange(deviceAddress, connection)
             }
             HandshakeStep.EXPECT_MESSAGE_3 -> {
                 connection.session.finishHandshake(frame)
-                advanceToProfileExchange(deviceAddress, connection)
+                advanceToDeviceIdExchange(deviceAddress, connection)
+            }
+            HandshakeStep.EXPECT_DEVICE_ID -> {
+                val remoteFingerprint = connection.session.decryptMessage(frame)
+                if (blockList.isBlocked(remoteFingerprint)) {
+                    if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
+                    connections.remove(deviceAddress)
+                    endActiveConnection("blocked peer")
+                    return
+                }
+                connection.remoteDeviceFingerprint = remoteFingerprint
+                connection.step = HandshakeStep.EXPECT_PROFILE
+                val ciphertext = connection.session.encryptMessage(profile.pseudonym)
+                if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
             }
             HandshakeStep.EXPECT_PROFILE -> {
                 val remotePseudonym = connection.session.decryptMessage(frame)
@@ -320,6 +338,7 @@ class BleChatController(
                 val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
                     remotePeerId = remotePeerId,
+                    remoteDeviceFingerprint = connection.remoteDeviceFingerprint!!,
                     remotePseudonym = remotePseudonym,
                     messages = if (contactStore.isSaved(remotePeerId)) historyStore.messagesFor(remotePeerId) else emptyList(),
                 )
@@ -345,8 +364,9 @@ class BleChatController(
     /** The Noise handshake is done and transport keys are ready. Before showing any chat UI,
      *  check the peer's now-revealed long-term identity against the block list — discovery only
      *  ever exposes rotating session ids, so this is the first point blocking can be enforced —
-     *  and only then trade pseudonyms, so a blocked peer never learns ours. */
-    private fun advanceToProfileExchange(deviceAddress: String, connection: Connection) {
+     *  then trade device fingerprints for a second, identity-independent block check (M5), and
+     *  only once both pass, trade pseudonyms, so a blocked peer never learns ours. */
+    private fun advanceToDeviceIdExchange(deviceAddress: String, connection: Connection) {
         val remotePeerId = connection.session.remotePeerId()
         if (blockList.isBlocked(remotePeerId)) {
             if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
@@ -354,8 +374,8 @@ class BleChatController(
             endActiveConnection("blocked peer")
             return
         }
-        connection.step = HandshakeStep.EXPECT_PROFILE
-        val ciphertext = connection.session.encryptMessage(profile.pseudonym)
+        connection.step = HandshakeStep.EXPECT_DEVICE_ID
+        val ciphertext = connection.session.encryptMessage(deviceFingerprint)
         if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
     }
 }
