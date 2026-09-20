@@ -20,7 +20,11 @@ are different things. FRAD uses two discovery layers:
    operates or controls this — anyone can run a bootstrap/relay node, and the
    node list is user-configurable rather than hard-locked, which is also what
    keeps this out of F-Droid's "Non-Free/Tethered Network Services"
-   anti-feature categories.
+   anti-feature categories. M3's file transfer only covers the local layer
+   (Wi-Fi Direct, same short range as BLE) — M4 needs its own file-transfer
+   path over whatever connection carries a wide-range chat (direct socket
+   when both peers are reachable, a relay node otherwise for peers behind
+   NAT), since Wi-Fi Direct can't reach across the internet.
 
 Every chat is end-to-end encrypted (Noise_XX handshake, X25519 + ChaCha20-
 Poly1305) directly between the two phones, regardless of which discovery layer
