@@ -15,6 +15,8 @@ android {
         // for a later milestone) needs API 26+. 26 is the floor for both.
         minSdk = 26
         targetSdk = 36
+        // Keep this under 1.0.0 until M2-M6 (see README "Project status") land -
+        // a 1.0 tag implies feature-complete, which this isn't yet.
         versionCode = 1
         versionName = "0.1.0"
 

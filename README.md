@@ -59,6 +59,9 @@ you have it, or ask in an issue — the summary above is the durable version.
 - M2–M6 (persistence/UX polish, Wi-Fi Direct media transfer, the wide-range
   DHT layer, abuse hardening, F-Droid release packaging): not started.
 
+**Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
+implies feature-complete, which this isn't yet.
+
 ## Building
 
 Requires JDK 17+ and the Android SDK (easiest: open the project root in a
