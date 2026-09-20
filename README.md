@@ -62,20 +62,32 @@ you have it, or ask in an issue — the summary above is the durable version.
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
 
+## Downloads
+
+Every push to `master` is built and republished as the ["latest"
+release](../../releases/tag/latest) on the Releases page — grab the APK there
+if you just want to install it without building anything. Tagged versions
+(`vX.Y.Z`) get their own numbered release the same way. These builds are
+currently signed with the Gradle-generated debug key (see `app/build.gradle.kts`)
+rather than a dedicated release key, since there's no other distribution
+channel yet — that's fine for installing directly, but will change before this
+ships anywhere like F-Droid or Play.
+
 ## Building
 
 Requires JDK 17+ and the Android SDK (easiest: open the project root in a
 recent Android Studio and let it configure both).
 
 ```bash
-./gradlew test          # crypto + pairing + framing unit tests, no device needed
-./gradlew assembleDebug # builds app/build/outputs/apk/debug/app-debug.apk
+./gradlew test            # crypto + pairing + framing unit tests, no device needed
+./gradlew assembleDebug   # builds app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease # builds app/build/outputs/apk/release/app-release.apk
 ```
 
-Install the debug APK on two physical Android phones (API 26+) to test the
-actual BLE discovery/chat flow — grant the Bluetooth permission prompt on
-both, toggle "Become visible nearby" on both, then "Chat with someone nearby"
-on one.
+Install the APK on two physical Android phones (API 26+) to test the actual
+BLE discovery/chat flow — grant the Bluetooth permission prompt on both,
+toggle "Become visible nearby" on both, then "Chat with someone nearby" on
+one.
 
 ## Project layout
 
@@ -86,6 +98,10 @@ on one.
   and `BleChatController`, which wires all of the above plus pairing/safety
   into the state machine the UI drives.
 - `pairing/` — `RandomMatcher`, the on-device "pick someone nearby" logic.
+- `profile/` — the user's local, freely-editable pseudonym, shown together with a
+  short tag derived from the peer id so two people with the same pseudonym stay
+  distinguishable. Exchanged with a peer right after the Noise handshake completes.
+- `contacts/` — on-device address book of peers saved from a past chat.
 - `safety/` — block list, report flow, request cooldown/rate-limiting.
 - `ui/` — Jetpack Compose screens + the `ChatViewModel` that bridges to
   `BleChatController`.

@@ -10,6 +10,7 @@ import me.woelki.friendradar.crypto.ChatSession
 import me.woelki.friendradar.crypto.Identity
 import me.woelki.friendradar.pairing.NearbyPeer
 import me.woelki.friendradar.pairing.RandomMatcher
+import me.woelki.friendradar.profile.Profile
 import me.woelki.friendradar.safety.BlockList
 import me.woelki.friendradar.safety.Cooldown
 import me.woelki.friendradar.safety.ReportFlow
@@ -25,7 +26,7 @@ sealed interface ChatUiState {
 
     data class Connecting(val target: NearbyPeer) : ChatUiState
     data object Handshaking : ChatUiState
-    data class Chatting(val remotePeerId: String, val messages: List<ChatMessage>) : ChatUiState
+    data class Chatting(val remotePeerId: String, val remotePseudonym: String, val messages: List<ChatMessage>) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }
 
@@ -38,6 +39,7 @@ sealed interface ChatUiState {
 class BleChatController(
     private val context: Context,
     private val identity: Identity,
+    private val profile: Profile,
 ) : BlePeripheralServer.Listener, BleCentralClient.Listener {
 
     private val blockList = BlockList(context)
@@ -51,10 +53,12 @@ class BleChatController(
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, DONE }
+    /** After the Noise handshake finishes, both sides immediately exchange one more
+     *  encrypted message — their pseudonym — before the chat is considered open. */
+    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_PROFILE, READY }
 
     private class Connection(val session: ChatSession, val isOutbound: Boolean) {
-        var step: HandshakeStep = if (session.isReady) HandshakeStep.DONE
+        var step: HandshakeStep = if (session.isReady) HandshakeStep.READY
         else if (isOutbound) HandshakeStep.EXPECT_MESSAGE_2 else HandshakeStep.EXPECT_MESSAGE_1
     }
 
@@ -106,7 +110,7 @@ class BleChatController(
     fun sendMessage(text: String) {
         val address = activeAddress ?: return
         val connection = connections[address] ?: return
-        if (connection.step != HandshakeStep.DONE) return
+        if (connection.step != HandshakeStep.READY) return
 
         val ciphertext = connection.session.encryptMessage(text)
         if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
@@ -198,15 +202,22 @@ class BleChatController(
             HandshakeStep.EXPECT_MESSAGE_2 -> {
                 val message3 = connection.session.completeHandshake(frame)
                 central.sendFrame(deviceAddress, message3)
-                connection.step = HandshakeStep.DONE
-                onHandshakeComplete(deviceAddress, connection)
+                advanceToProfileExchange(deviceAddress, connection)
             }
             HandshakeStep.EXPECT_MESSAGE_3 -> {
                 connection.session.finishHandshake(frame)
-                connection.step = HandshakeStep.DONE
-                onHandshakeComplete(deviceAddress, connection)
+                advanceToProfileExchange(deviceAddress, connection)
             }
-            HandshakeStep.DONE -> {
+            HandshakeStep.EXPECT_PROFILE -> {
+                val remotePseudonym = connection.session.decryptMessage(frame)
+                connection.step = HandshakeStep.READY
+                _state.value = ChatUiState.Chatting(
+                    remotePeerId = connection.session.remotePeerId(),
+                    remotePseudonym = remotePseudonym,
+                    messages = emptyList(),
+                )
+            }
+            HandshakeStep.READY -> {
                 val text = connection.session.decryptMessage(frame)
                 _state.update { current ->
                     if (current is ChatUiState.Chatting) {
@@ -217,17 +228,20 @@ class BleChatController(
         }
     }
 
-    private fun onHandshakeComplete(deviceAddress: String, connection: Connection) {
+    /** The Noise handshake is done and transport keys are ready. Before showing any chat UI,
+     *  check the peer's now-revealed long-term identity against the block list — discovery only
+     *  ever exposes rotating session ids, so this is the first point blocking can be enforced —
+     *  and only then trade pseudonyms, so a blocked peer never learns ours. */
+    private fun advanceToProfileExchange(deviceAddress: String, connection: Connection) {
         val remotePeerId = connection.session.remotePeerId()
         if (blockList.isBlocked(remotePeerId)) {
-            // Blocking only becomes possible to check *after* the handshake reveals the
-            // peer's long-term identity — discovery only ever exposes rotating session
-            // ids. Silently drop rather than surfacing any chat UI.
             if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
             connections.remove(deviceAddress)
             endActiveConnection("blocked peer")
             return
         }
-        _state.value = ChatUiState.Chatting(remotePeerId = remotePeerId, messages = emptyList())
+        connection.step = HandshakeStep.EXPECT_PROFILE
+        val ciphertext = connection.session.encryptMessage(profile.pseudonym)
+        if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
     }
 }

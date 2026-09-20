@@ -17,8 +17,8 @@ android {
         targetSdk = 36
         // Keep this under 1.0.0 until M2-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet.
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -27,6 +27,12 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // No dedicated release key yet, so sign with the auto-generated debug keystore -
+            // this keeps CI able to produce an installable APK on every build without any
+            // signing secrets to manage. F-Droid signs its own build with its own key
+            // regardless; swap this for a real release key before any other distribution
+            // channel (e.g. Play Store) is added.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
