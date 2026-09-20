@@ -1,5 +1,6 @@
 package me.woelki.friendradar.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,7 +25,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import me.woelki.friendradar.ble.ChatMessage
 import me.woelki.friendradar.ble.ChatUiState
+import me.woelki.friendradar.contacts.Contact
 import me.woelki.friendradar.profile.Profile
 
 private enum class Tab { RADAR, CONTACTS, BLOCKED, PROFILE }
@@ -132,7 +135,7 @@ private fun BrowsingContent(peerCount: Int, onStop: () -> Unit, onRandomChat: ()
 private fun ChatContent(
     remotePeerId: String,
     remotePseudonym: String,
-    messages: List<me.woelki.friendradar.ble.ChatMessage>,
+    messages: List<ChatMessage>,
     alreadySaved: Boolean,
     onSend: (String) -> Unit,
     onLeave: () -> Unit,
@@ -153,13 +156,7 @@ private fun ChatContent(
         }
         Spacer(Modifier.height(8.dp))
 
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(messages) { message ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromMe) Arrangement.End else Arrangement.Start) {
-                    Text(if (message.fromMe) "You: ${message.text}" else message.text)
-                }
-            }
-        }
+        MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth())
 
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -178,8 +175,30 @@ private fun ChatContent(
 }
 
 @Composable
+private fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
+    LazyColumn(modifier = modifier) {
+        items(messages) { message ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromMe) Arrangement.End else Arrangement.Start) {
+                Text(if (message.fromMe) "You: ${message.text}" else message.text)
+            }
+        }
+    }
+}
+
+@Composable
 private fun ContactsTab(viewModel: ChatViewModel) {
     var contacts by remember { mutableStateOf(viewModel.contacts()) }
+    var viewingHistoryFor by remember { mutableStateOf<Contact?>(null) }
+
+    val viewing = viewingHistoryFor
+    if (viewing != null) {
+        ContactHistoryContent(
+            contact = viewing,
+            messages = remember(viewing.peerId) { viewModel.historyWith(viewing.peerId) },
+            onBack = { viewingHistoryFor = null },
+        )
+        return
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text("Saved contacts", style = MaterialTheme.typography.titleMedium)
@@ -190,7 +209,10 @@ private fun ContactsTab(viewModel: ChatViewModel) {
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             items(contacts) { contact ->
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(Profile.displayName(contact.alias, contact.peerId), modifier = Modifier.weight(1f))
+                    Text(
+                        Profile.displayName(contact.alias, contact.peerId),
+                        modifier = Modifier.weight(1f).clickable { viewingHistoryFor = contact },
+                    )
                     TextButton(onClick = {
                         viewModel.removeContact(contact.peerId)
                         contacts = viewModel.contacts()
@@ -198,6 +220,21 @@ private fun ContactsTab(viewModel: ChatViewModel) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ContactHistoryContent(contact: Contact, messages: List<ChatMessage>, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("< Back") }
+            Text(Profile.displayName(contact.alias, contact.peerId), style = MaterialTheme.typography.titleMedium)
+        }
+        Spacer(Modifier.height(8.dp))
+        if (messages.isEmpty()) {
+            Text("No saved messages with this contact yet - only messages exchanged after you saved them are kept.")
+        }
+        MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth())
     }
 }
 

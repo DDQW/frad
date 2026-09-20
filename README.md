@@ -56,8 +56,15 @@ you have it, or ask in an issue — the summary above is the durable version.
   install the debug APK on both, toggle "Become visible nearby" on both, then
   "Chat with someone nearby" on one, and see whether discovery/pairing/chat
   actually works end-to-end over real Bluetooth hardware.
-- M2–M6 (persistence/UX polish, Wi-Fi Direct media transfer, the wide-range
-  DHT layer, abuse hardening, F-Droid release packaging): not started.
+- **M2 — persistence/UX polish**: implemented. Pseudonym/profile, contacts and
+  the block list all persist on-device (`SharedPreferences`), and so does chat
+  history — but only for peers you've explicitly saved as a contact; a chat
+  with anyone else leaves nothing on disk once it ends, and removing a contact
+  erases their history too. Saved history is viewable read-only from the
+  Contacts tab (you can't message a saved contact on demand, since discovery
+  is still anonymous/rotating — you can only see what was said in past chats).
+- M3–M6 (Wi-Fi Direct media transfer, the wide-range DHT layer, abuse
+  hardening, F-Droid release packaging): not started.
 
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
@@ -101,7 +108,9 @@ one.
 - `profile/` — the user's local, freely-editable pseudonym, shown together with a
   short tag derived from the peer id so two people with the same pseudonym stay
   distinguishable. Exchanged with a peer right after the Noise handshake completes.
-- `contacts/` — on-device address book of peers saved from a past chat.
+- `contacts/` — on-device address book of peers saved from a past chat
+  (`ContactStore`), plus their persisted chat transcript (`ChatHistoryStore`,
+  saved contacts only).
 - `safety/` — block list, report flow, request cooldown/rate-limiting.
 - `ui/` — Jetpack Compose screens + the `ChatViewModel` that bridges to
   `BleChatController`.

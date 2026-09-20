@@ -5,7 +5,8 @@ import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import me.woelki.friendradar.contacts.ChatHistoryStore
+import me.woelki.friendradar.contacts.ContactStore
 import me.woelki.friendradar.crypto.ChatSession
 import me.woelki.friendradar.crypto.Identity
 import me.woelki.friendradar.pairing.NearbyPeer
@@ -43,6 +44,8 @@ class BleChatController(
 ) : BlePeripheralServer.Listener, BleCentralClient.Listener {
 
     private val blockList = BlockList(context)
+    private val contactStore = ContactStore(context)
+    private val historyStore = ChatHistoryStore(context)
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
@@ -117,8 +120,16 @@ class BleChatController(
 
         val current = _state.value
         if (current is ChatUiState.Chatting) {
-            _state.value = current.copy(messages = current.messages + ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis()))
+            val message = ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis())
+            _state.value = current.copy(messages = current.messages + message)
+            persistIfSaved(current.remotePeerId, message)
         }
+    }
+
+    /** Chat history is only ever written to disk for peers the user chose to save as a
+     *  contact - see [ChatHistoryStore]. */
+    private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
+        if (contactStore.isSaved(remotePeerId)) historyStore.append(remotePeerId, message)
     }
 
     fun endActiveConnection(reason: String) {
@@ -211,18 +222,20 @@ class BleChatController(
             HandshakeStep.EXPECT_PROFILE -> {
                 val remotePseudonym = connection.session.decryptMessage(frame)
                 connection.step = HandshakeStep.READY
+                val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
-                    remotePeerId = connection.session.remotePeerId(),
+                    remotePeerId = remotePeerId,
                     remotePseudonym = remotePseudonym,
-                    messages = emptyList(),
+                    messages = if (contactStore.isSaved(remotePeerId)) historyStore.messagesFor(remotePeerId) else emptyList(),
                 )
             }
             HandshakeStep.READY -> {
                 val text = connection.session.decryptMessage(frame)
-                _state.update { current ->
-                    if (current is ChatUiState.Chatting) {
-                        current.copy(messages = current.messages + ChatMessage(fromMe = false, text = text, atMillis = System.currentTimeMillis()))
-                    } else current
+                val message = ChatMessage(fromMe = false, text = text, atMillis = System.currentTimeMillis())
+                val current = _state.value
+                if (current is ChatUiState.Chatting) {
+                    _state.value = current.copy(messages = current.messages + message)
+                    persistIfSaved(current.remotePeerId, message)
                 }
             }
         }
