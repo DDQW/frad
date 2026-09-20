@@ -8,7 +8,7 @@ import org.junit.Test
 
 class RandomMatcherTest {
 
-    private fun peer(id: String) = NearbyPeer(sessionId = id, rssi = -60, lastSeenAtMillis = 0)
+    private fun peer(id: String) = NearbyPeer(sessionId = id, lastSeenAtMillis = 0, signalStrength = SignalStrength.Ble(-60))
 
     @Test
     fun `returns null when there are no candidates`() {
@@ -50,5 +50,16 @@ class RandomMatcherTest {
         val candidates = listOf(peer("a"), peer("b"), peer("c"))
         val seen = (1..200).mapNotNull { matcher.pickRandomPeer(candidates)?.sessionId }.toSet()
         assertTrue(seen == setOf("a", "b", "c"))
+    }
+
+    @Test
+    fun `matching works across peers with no rssi concept, e_g_ wide-range discovery`() {
+        val matcher = RandomMatcher(Random(1))
+        val candidates = listOf(
+            NearbyPeer(sessionId = "local", lastSeenAtMillis = 0, signalStrength = SignalStrength.Ble(-70)),
+            NearbyPeer(sessionId = "wide", lastSeenAtMillis = 0, signalStrength = SignalStrength.Unknown),
+        )
+        val seen = (1..200).mapNotNull { matcher.pickRandomPeer(candidates)?.sessionId }.toSet()
+        assertTrue(seen == setOf("local", "wide"))
     }
 }

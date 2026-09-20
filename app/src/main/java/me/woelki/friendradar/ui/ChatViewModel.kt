@@ -9,9 +9,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import me.woelki.friendradar.ble.BleChatController
-import me.woelki.friendradar.ble.ChatMessage
-import me.woelki.friendradar.ble.ChatUiState
-import me.woelki.friendradar.ble.MAX_TRANSFER_FILE_BYTES
+import me.woelki.friendradar.chat.ChatController
+import me.woelki.friendradar.chat.ChatMessage
+import me.woelki.friendradar.chat.ChatUiState
+import me.woelki.friendradar.chat.MAX_TRANSFER_FILE_BYTES
 import me.woelki.friendradar.contacts.ChatHistoryStore
 import me.woelki.friendradar.contacts.Contact
 import me.woelki.friendradar.contacts.ContactStore
@@ -27,7 +28,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val historyStore = ChatHistoryStore(application)
     private val mediaFileStore = MediaFileStore(application)
     private val blockList = BlockList(application)
-    private val controller = BleChatController(application, identity, profile)
+    private val controller: ChatController = BleChatController(application, identity, profile)
 
     val state: StateFlow<ChatUiState> = controller.state
     val transferStatus: StateFlow<String?> = controller.transferStatus

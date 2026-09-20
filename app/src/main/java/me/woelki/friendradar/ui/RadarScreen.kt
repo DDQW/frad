@@ -37,9 +37,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import java.io.File
-import me.woelki.friendradar.ble.ChatMessage
-import me.woelki.friendradar.ble.ChatUiState
-import me.woelki.friendradar.ble.MessageKind
+import me.woelki.friendradar.chat.ChatMessage
+import me.woelki.friendradar.chat.ChatUiState
+import me.woelki.friendradar.chat.MessageKind
 import me.woelki.friendradar.contacts.Contact
 import me.woelki.friendradar.profile.Profile
 

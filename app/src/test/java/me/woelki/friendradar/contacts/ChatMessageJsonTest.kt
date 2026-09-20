@@ -1,7 +1,7 @@
 package me.woelki.friendradar.contacts
 
-import me.woelki.friendradar.ble.ChatMessage
-import me.woelki.friendradar.ble.MessageKind
+import me.woelki.friendradar.chat.ChatMessage
+import me.woelki.friendradar.chat.MessageKind
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals

@@ -2,17 +2,26 @@ package me.woelki.friendradar.pairing
 
 import kotlin.random.Random
 
-/** A peer currently visible over BLE and opted in to receiving chat requests. */
+/** How strongly a discovered peer's presence signal came through — transport-specific,
+ *  since BLE has a real RSSI concept and wide-range DHT discovery does not. */
+sealed interface SignalStrength {
+    data class Ble(val rssiDbm: Int) : SignalStrength
+    data object Unknown : SignalStrength
+}
+
+/** A peer currently visible over some discovery transport and opted in to receiving chat
+ *  requests. [sessionId] is only unique within the transport that discovered it. */
 data class NearbyPeer(
     val sessionId: String,
-    val rssi: Int,
     val lastSeenAtMillis: Long,
+    val signalStrength: SignalStrength = SignalStrength.Unknown,
 )
 
 /**
  * Picks who to propose a chat with when the user taps "find someone nearby".
- * All matching happens locally on-device from whatever the BLE scanner has
- * currently observed — there is no server involved in "randomness" here.
+ * All matching happens locally on-device from whatever the current discovery
+ * transport has currently observed — there is no server involved in
+ * "randomness" here.
  */
 class RandomMatcher(private val random: Random = Random.Default) {
 

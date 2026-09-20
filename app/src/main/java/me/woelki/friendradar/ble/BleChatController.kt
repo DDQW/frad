@@ -10,6 +10,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import me.woelki.friendradar.chat.ChatController
+import me.woelki.friendradar.chat.ChatMessage
+import me.woelki.friendradar.chat.ChatUiState
+import me.woelki.friendradar.chat.MAX_TRANSFER_FILE_BYTES
+import me.woelki.friendradar.chat.MessageKind
 import me.woelki.friendradar.contacts.ChatHistoryStore
 import me.woelki.friendradar.contacts.ContactStore
 import me.woelki.friendradar.crypto.ChatSession
@@ -17,6 +22,7 @@ import me.woelki.friendradar.crypto.Identity
 import me.woelki.friendradar.data.MediaFileStore
 import me.woelki.friendradar.pairing.NearbyPeer
 import me.woelki.friendradar.pairing.RandomMatcher
+import me.woelki.friendradar.pairing.SignalStrength
 import me.woelki.friendradar.profile.Profile
 import me.woelki.friendradar.safety.BlockList
 import me.woelki.friendradar.safety.Cooldown
@@ -24,37 +30,6 @@ import me.woelki.friendradar.safety.ReportFlow
 import me.woelki.friendradar.wifidirect.WfdCredentials
 import me.woelki.friendradar.wifidirect.WifiDirectTransferManager
 import org.json.JSONObject
-
-enum class MessageKind { TEXT, FILE }
-
-/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text]. */
-data class ChatMessage(
-    val fromMe: Boolean,
-    val text: String,
-    val atMillis: Long,
-    val kind: MessageKind = MessageKind.TEXT,
-    val fileName: String? = null,
-    val mimeType: String? = null,
-    val sizeBytes: Long = 0L,
-    val localPath: String? = null,
-)
-
-/** Maximum size of a file this app will send or accept over Wi-Fi Direct — guards against
- *  accidental huge sends and against a peer claiming an implausible size in a file offer. */
-const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
-
-sealed interface ChatUiState {
-    /** Broadcasting is off; nothing is happening. */
-    data object Idle : ChatUiState
-
-    /** Opted in: advertising presence and scanning for others who are too. */
-    data class Browsing(val nearbyPeers: List<NearbyPeer>) : ChatUiState
-
-    data class Connecting(val target: NearbyPeer) : ChatUiState
-    data object Handshaking : ChatUiState
-    data class Chatting(val remotePeerId: String, val remotePseudonym: String, val messages: List<ChatMessage>) : ChatUiState
-    data class Ended(val reason: String) : ChatUiState
-}
 
 /**
  * Ties the BLE transport ([BlePeripheralServer] + [BleCentralClient]), the
@@ -66,7 +41,7 @@ class BleChatController(
     private val context: Context,
     private val identity: Identity,
     private val profile: Profile,
-) : BlePeripheralServer.Listener, BleCentralClient.Listener {
+) : ChatController, BlePeripheralServer.Listener, BleCentralClient.Listener {
 
     private val blockList = BlockList(context)
     private val contactStore = ContactStore(context)
@@ -88,13 +63,13 @@ class BleChatController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
-    val state: StateFlow<ChatUiState> = _state.asStateFlow()
+    override val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     /** Non-null while a file send/receive is in flight; null the rest of the time. */
     private val _transferStatus = MutableStateFlow<String?>(null)
-    val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
+    override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
 
-    val fileTransferAvailable: Boolean get() = transferManager != null
+    override val fileTransferAvailable: Boolean get() = transferManager != null
 
     /** After the Noise handshake finishes, both sides immediately exchange one more
      *  encrypted message — their pseudonym — before the chat is considered open. */
@@ -118,7 +93,7 @@ class BleChatController(
 
     /** The user-facing "make me discoverable" toggle. Off by default and never
      *  persisted across app restarts — see the safety-by-design notes in the plan. */
-    fun setBrowsing(enabled: Boolean) {
+    override fun setBrowsing(enabled: Boolean) {
         if (enabled == browsing) return
         browsing = enabled
         if (enabled) {
@@ -136,7 +111,7 @@ class BleChatController(
     }
 
     /** Picks a random currently-visible peer and starts a chat with them. */
-    fun requestRandomChat() {
+    override fun requestRandomChat() {
         if (_state.value !is ChatUiState.Browsing) return
         val picked = matcher.pickRandomPeer(discoveredByAddress.values.toList()) ?: return
         if (!cooldown.canRequest(picked.sessionId)) return
@@ -150,7 +125,7 @@ class BleChatController(
         central.connect(address)
     }
 
-    fun sendMessage(text: String) {
+    override fun sendMessage(text: String) {
         val address = activeAddress ?: return
         val connection = connections[address] ?: return
         if (connection.step != HandshakeStep.READY) return
@@ -163,7 +138,7 @@ class BleChatController(
      *  peer joined; the BLE channel only ever carries the small offer envelope (network name/
      *  passphrase/metadata), never the file itself. No-op if a transfer is already in flight,
      *  [fileTransferAvailable] is false, or [bytes] exceeds [MAX_TRANSFER_FILE_BYTES]. */
-    fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
+    override fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
         val manager = transferManager ?: return
         val address = activeAddress ?: return
         val connection = connections[address] ?: return
@@ -247,7 +222,7 @@ class BleChatController(
         }
     }
 
-    fun endActiveConnection(reason: String) {
+    override fun endActiveConnection(reason: String) {
         val address = activeAddress
         if (address != null) {
             val connection = connections[address]
@@ -264,13 +239,13 @@ class BleChatController(
         }
     }
 
-    fun blockActivePeer() {
+    override fun blockActivePeer() {
         val current = _state.value
         if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId)
         endActiveConnection("blocked")
     }
 
-    fun reportActivePeer(reason: String) {
+    override fun reportActivePeer(reason: String) {
         val current = _state.value
         if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, reason)
         endActiveConnection("reported")
@@ -299,7 +274,11 @@ class BleChatController(
     override fun onPeerDiscovered(deviceAddress: String, sessionId: ByteArray, rssi: Int) {
         val sessionIdHex = sessionId.joinToString("") { "%02x".format(it) }
         addressBySessionId[sessionIdHex] = deviceAddress
-        discoveredByAddress[deviceAddress] = NearbyPeer(sessionId = sessionIdHex, rssi = rssi, lastSeenAtMillis = System.currentTimeMillis())
+        discoveredByAddress[deviceAddress] = NearbyPeer(
+            sessionId = sessionIdHex,
+            lastSeenAtMillis = System.currentTimeMillis(),
+            signalStrength = SignalStrength.Ble(rssi),
+        )
         if (_state.value is ChatUiState.Browsing) {
             _state.value = ChatUiState.Browsing(discoveredByAddress.values.toList())
         }
