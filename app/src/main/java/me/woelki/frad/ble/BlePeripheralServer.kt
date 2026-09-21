@@ -15,6 +15,7 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
+import java.util.ArrayDeque
 
 /**
  * The "available to chat" side of BLE presence: advertises a rotating session id
@@ -44,6 +45,15 @@ class BlePeripheralServer(
     private val reassemblers = mutableMapOf<String, FrameReassembler>()
     private val negotiatedMtu = mutableMapOf<String, Int>()
     private val devicesByAddress = mutableMapOf<String, BluetoothDevice>()
+
+    // A GATT server connection allows only one outstanding notification at a time — sending
+    // the next fragment before onNotificationSent confirms the last one risks it being
+    // silently dropped, same as the central side's writeCharacteristic. Only matters once a
+    // message needs more than one fragment (e.g. MTU negotiation got refused), but a dropped
+    // fragment there means the reassembler on the other end waits forever for bytes that are
+    // never coming, so it's worth queuing properly rather than firing-and-forgetting.
+    private val pendingNotifications = mutableMapOf<String, ArrayDeque<ByteArray>>()
+    private val notifyInFlight = mutableMapOf<String, Boolean>()
 
     /** @param sessionId a short-lived, rotating id — see [me.woelki.frad.pairing]. */
     fun start(sessionId: ByteArray) {
@@ -109,20 +119,30 @@ class BlePeripheralServer(
         reassemblers.clear()
         negotiatedMtu.clear()
         devicesByAddress.clear()
+        pendingNotifications.clear()
+        notifyInFlight.clear()
     }
 
     fun sendFrame(deviceAddress: String, message: ByteArray) {
+        val fragmentSize = (negotiatedMtu[deviceAddress] ?: GattProfile.LEGACY_FRAGMENT_SIZE + GattProfile.ATT_HEADER_SIZE) - GattProfile.ATT_HEADER_SIZE
+        val queue = pendingNotifications.getOrPut(deviceAddress) { ArrayDeque() }
+        for (fragment in FrameWriter.split(message, fragmentSize)) queue.add(fragment)
+        pumpNotifyQueue(deviceAddress)
+    }
+
+    private fun pumpNotifyQueue(deviceAddress: String) {
+        if (notifyInFlight[deviceAddress] == true) return
         val server = gattServer ?: return
         val device = devicesByAddress[deviceAddress] ?: return
         val service = server.getService(GattProfile.SERVICE_UUID) ?: return
         val outbox = service.getCharacteristic(GattProfile.OUTBOX_CHARACTERISTIC_UUID) ?: return
-        val fragmentSize = (negotiatedMtu[deviceAddress] ?: GattProfile.LEGACY_FRAGMENT_SIZE + GattProfile.ATT_HEADER_SIZE) - GattProfile.ATT_HEADER_SIZE
+        val queue = pendingNotifications[deviceAddress] ?: return
+        val next = queue.poll() ?: return
 
-        for (fragment in FrameWriter.split(message, fragmentSize)) {
-            outbox.value = fragment
-            @Suppress("DEPRECATION") // notifyCharacteristicChanged(device, characteristic, confirm) is the API available at minSdk 26
-            server.notifyCharacteristicChanged(device, outbox, false)
-        }
+        notifyInFlight[deviceAddress] = true
+        outbox.value = next
+        @Suppress("DEPRECATION") // notifyCharacteristicChanged(device, characteristic, confirm) is the API available at minSdk 26
+        server.notifyCharacteristicChanged(device, outbox, false)
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
@@ -141,12 +161,19 @@ class BlePeripheralServer(
                 devicesByAddress.remove(device.address)
                 reassemblers.remove(device.address)
                 negotiatedMtu.remove(device.address)
+                pendingNotifications.remove(device.address)
+                notifyInFlight.remove(device.address)
                 listener.onCentralDisconnected(device.address)
             }
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             negotiatedMtu[device.address] = mtu
+        }
+
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            notifyInFlight[device.address] = false
+            pumpNotifyQueue(device.address)
         }
 
         override fun onCharacteristicWriteRequest(

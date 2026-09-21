@@ -122,19 +122,31 @@ class BleCentralClient(
             val service = gatt.getService(GattProfile.SERVICE_UUID) ?: return
             connection.inbox = service.getCharacteristic(GattProfile.INBOX_CHARACTERISTIC_UUID)
             val outbox = service.getCharacteristic(GattProfile.OUTBOX_CHARACTERISTIC_UUID)
-
-            if (outbox != null) {
-                gatt.setCharacteristicNotification(outbox, true)
-                val cccd = outbox.getDescriptor(GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID)
-                if (cccd != null) {
-                    @Suppress("DEPRECATION")
-                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    @Suppress("DEPRECATION")
-                    gatt.writeDescriptor(cccd)
-                }
+            val cccd = outbox?.let {
+                gatt.setCharacteristicNotification(it, true)
+                it.getDescriptor(GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID)
             }
 
-            listener.onConnected(gatt.device.address)
+            if (cccd != null) {
+                // A GATT connection only ever has one operation in flight at a time, so the
+                // Noise handshake's first message (sent once onConnected fires) has to wait
+                // for this descriptor write to actually complete — see onDescriptorWrite —
+                // rather than firing right after this call returns. Issuing the characteristic
+                // write while this one is still pending gets it silently dropped by the stack,
+                // which used to strand the handshake before its first byte ever went out.
+                @Suppress("DEPRECATION")
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                gatt.writeDescriptor(cccd)
+            } else {
+                listener.onConnected(gatt.device.address)
+            }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid == GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID) {
+                listener.onConnected(gatt.device.address)
+            }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
