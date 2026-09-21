@@ -55,13 +55,13 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk "FriendRadar-${{ github.ref_name }}.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "FRAD-${{ github.ref_name }}.apk"
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: FriendRadar-${{ github.ref_name }}.apk
+          files: FRAD-${{ github.ref_name }}.apk
           generate_release_notes: true
 
       - name: Publish rolling "latest" build
@@ -76,4 +76,4 @@ jobs:
             Releases page for versioned builds.
           prerelease: true
           make_latest: false
-          files: FriendRadar-${{ github.ref_name }}.apk
+          files: FRAD-${{ github.ref_name }}.apk
