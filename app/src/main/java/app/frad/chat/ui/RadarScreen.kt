@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
@@ -31,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -92,8 +94,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -105,7 +109,9 @@ import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.Contact
 import app.frad.chat.media.AudioRecorder
 import app.frad.chat.media.CaptureFiles
+import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
+import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.ui.theme.fradExtraColors
 import app.frad.chat.wideradius.AreaLookup
 import app.frad.chat.wideradius.Geohash
@@ -223,6 +229,10 @@ private fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
             ChatContent(
                 remotePeerId = current.remotePeerId,
                 remotePseudonym = current.remotePseudonym,
+                remoteGender = current.remoteGender,
+                remoteAge = current.remoteAge,
+                remoteBio = current.remoteBio,
+                remotePhoto = current.remotePhoto,
                 messages = current.messages,
                 alreadySaved = saved,
                 fileTransferAvailable = viewModel.fileTransferAvailable,
@@ -334,6 +344,10 @@ private fun BrowsingContent(peerCount: Int, onStop: () -> Unit, onRandomChat: ()
 private fun ChatContent(
     remotePeerId: String,
     remotePseudonym: String,
+    remoteGender: Gender,
+    remoteAge: Int?,
+    remoteBio: String,
+    remotePhoto: ByteArray?,
     messages: List<ChatMessage>,
     alreadySaved: Boolean,
     fileTransferAvailable: Boolean,
@@ -439,17 +453,27 @@ private fun ChatContent(
         Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(label = remotePseudonym, size = 36.dp)
+                    Avatar(label = remotePseudonym, photoBytes = remotePhoto, size = 44.dp)
                     Spacer(Modifier.width(10.dp))
-                    Text(
-                        Profile.displayName(remotePseudonym, remotePeerId),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            Profile.displayName(remotePseudonym, remotePeerId),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            genderAgeLine(remoteGender, remoteAge),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = onLeave) {
                         Icon(Icons.Default.Close, contentDescription = "Leave chat")
                     }
+                }
+                if (remoteBio.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(remoteBio, style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -594,17 +618,31 @@ private fun ChatContent(
     }
 }
 
-/** A small circular initial-letter avatar, used anywhere a peer/contact is shown in a list or
- *  header - purely cosmetic; peer identity is always the full [Profile.displayName]. */
+/** A small circular avatar, used anywhere a peer/contact is shown in a list or header - shows
+ *  [photoBytes] (decoded fresh each time it changes) if set, otherwise falls back to an
+ *  initial-letter placeholder. Purely cosmetic either way; peer identity is always the full
+ *  [Profile.displayName]. */
 @Composable
-private fun Avatar(label: String, size: androidx.compose.ui.unit.Dp = 40.dp) {
+private fun Avatar(label: String, photoBytes: ByteArray? = null, size: androidx.compose.ui.unit.Dp = 40.dp) {
     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(size)) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Text(
-                label.take(1).uppercase(),
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                fontWeight = FontWeight.Bold,
+        val bitmap = remember(photoBytes) {
+            photoBytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }.getOrNull() }
+        }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
             )
+        } else {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    label.take(1).uppercase(),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
     }
 }
@@ -665,6 +703,11 @@ private fun FileMessageContent(message: ChatMessage, onOpen: () -> Unit) {
             TextButton(onClick = onOpen) { Text("Open") }
         }
     }
+}
+
+private fun genderAgeLine(gender: Gender, age: Int?): String {
+    val genderLabel = if (gender == Gender.MALE) "Male" else "Female"
+    return if (age != null) "$genderLabel, $age" else genderLabel
 }
 
 private fun openFile(context: Context, message: ChatMessage) {
@@ -815,6 +858,10 @@ private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Un
 @Composable
 private fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
+    var genderDraft by remember { mutableStateOf(viewModel.gender) }
+    var ageDraft by remember { mutableStateOf(viewModel.age?.toString() ?: "") }
+    var bioDraft by remember { mutableStateOf(viewModel.bio) }
+    var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
     var bootstrapDraft by remember { mutableStateOf(viewModel.bootstrapNodes.joinToString("\n")) }
@@ -826,11 +873,18 @@ private fun ProfileTab(viewModel: ChatViewModel) {
     var areaStatus by remember { mutableStateOf<String?>(null) }
     var resolvingArea by remember { mutableStateOf(false) }
 
-    // The stored area is a geohash (see Profile.coarseGeohash) - show it as a place name instead
-    // of that cryptic code by reverse-geocoding it once when this screen first appears.
     LaunchedEffect(Unit) {
+        photoBytes = ProfilePhoto.bytesOrNull(context)
+        // The stored area is a geohash (see Profile.coarseGeohash) - show it as a place name
+        // instead of that cryptic code by reverse-geocoding it once when this screen first appears.
         val saved = viewModel.coarseGeohash ?: return@LaunchedEffect
         areaNameDraft = AreaLookup.nameFor(context, saved) ?: saved
+    }
+
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null && ProfilePhoto.store(context, uri)) {
+            photoBytes = ProfilePhoto.bytesOrNull(context)
+        }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -855,11 +909,25 @@ private fun ProfileTab(viewModel: ChatViewModel) {
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
         SectionCard(title = "Your profile") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(label = draft)
+                Box(
+                    modifier = Modifier.clickable {
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                ) {
+                    Avatar(label = draft, photoBytes = photoBytes, size = 56.dp)
+                }
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("Others see you as", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(Profile.displayName(draft, viewModel.myPeerId), fontWeight = FontWeight.SemiBold)
+                    Row {
+                        TextButton(onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
+                            Text(if (photoBytes == null) "Add photo" else "Change photo")
+                        }
+                        if (photoBytes != null) {
+                            TextButton(onClick = { ProfilePhoto.clear(context); photoBytes = null }) { Text("Remove") }
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -869,11 +937,47 @@ private fun ProfileTab(viewModel: ChatViewModel) {
                 label = { Text("Pseudonym") },
                 modifier = Modifier.fillMaxWidth(),
             )
+            Spacer(Modifier.height(12.dp))
+            Text("Gender", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = genderDraft == Gender.MALE, onClick = { genderDraft = Gender.MALE }, label = { Text("Male") })
+                FilterChip(selected = genderDraft == Gender.FEMALE, onClick = { genderDraft = Gender.FEMALE }, label = { Text("Female") })
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = ageDraft,
+                onValueChange = { ageDraft = it.filter(Char::isDigit).take(3) },
+                label = { Text("Age (optional)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = bioDraft,
+                onValueChange = { bioDraft = it.take(Profile.MAX_BIO_LENGTH) },
+                label = { Text("Short description (optional)") },
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "${bioDraft.length}/${Profile.MAX_BIO_LENGTH}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { viewModel.myPseudonym = draft }) { Text("Save") }
+            Button(onClick = {
+                viewModel.myPseudonym = draft
+                viewModel.gender = genderDraft
+                viewModel.age = ageDraft.toIntOrNull()
+                viewModel.bio = bioDraft
+            }) { Text("Save") }
             Spacer(Modifier.height(12.dp))
             Text(
-                "The part after # is unique to your device, so people who picked the same pseudonym as you stay distinguishable.",
+                "The part after # is unique to your device, so people who picked the same pseudonym as you stay distinguishable. " +
+                    "Your photo, gender, age and description are shown automatically to whoever you match with - the photo is " +
+                    "kept deliberately tiny/low-quality so it doesn't slow down connecting.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

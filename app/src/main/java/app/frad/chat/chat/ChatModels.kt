@@ -32,6 +32,10 @@ sealed interface ChatUiState {
         val remotePeerId: String,
         val remoteDeviceFingerprint: String,
         val remotePseudonym: String,
+        val remoteGender: app.frad.chat.profile.Gender,
+        val remoteAge: Int?,
+        val remoteBio: String,
+        val remotePhoto: ByteArray?,
         val messages: List<ChatMessage>,
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState

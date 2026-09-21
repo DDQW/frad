@@ -51,6 +51,17 @@ found them.
   a peer only learns who they actually matched with once an encrypted session
   is already established with them specifically, so passively scanning for
   nearby devices can't be used to build a tracking profile.
+- Profile fields (pseudonym, gender, age, bio, photo - all optional except
+  pseudonym/gender) are shared automatically with whoever you match with,
+  the same way the pseudonym alone used to be - see `profile/ProfileEnvelope.kt`.
+  Nothing here is sent anywhere *before* that encrypted session exists,
+  and none of it is persisted about a peer unless you explicitly save them
+  as a contact. The photo is deliberately a tiny, low-quality thumbnail
+  (`profile/ProfilePhoto.kt`) - not to save space, but because it travels
+  over the same small-fragment BLE control channel as the Noise handshake
+  itself, where a bigger payload would mean meaningfully less reliable
+  connections (see the BLE fixes in the commit history for why that channel
+  is handled this carefully).
 - On-device block list and report flow (there's no central authority to
   report *to*, so "report" = immediately block + keep a local note of why).
 

@@ -30,6 +30,7 @@ import app.frad.chat.contacts.Contact
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.data.MediaFileStore
+import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 import app.frad.chat.safety.BlockList
 import app.frad.chat.wideradius.CoarseLocation
@@ -102,6 +103,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var myPseudonym: String
         get() = profile.pseudonym
         set(value) { profile.pseudonym = value }
+
+    var gender: Gender
+        get() = profile.gender
+        set(value) { profile.gender = value }
+
+    var age: Int?
+        get() = profile.age
+        set(value) { profile.age = value }
+
+    var bio: String
+        get() = profile.bio
+        set(value) { profile.bio = value }
 
     var coarseGeohash: String?
         get() = profile.coarseGeohash

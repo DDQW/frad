@@ -3,6 +3,8 @@ package app.frad.chat.profile
 import android.content.Context
 import kotlin.random.Random
 
+enum class Gender { MALE, FEMALE }
+
 /**
  * The user's local, freely-editable display name. Unlike
  * [app.frad.chat.crypto.Identity.peerId], a pseudonym is *not* required to be
@@ -64,6 +66,30 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_ALWAYS_VISIBLE, true)
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_VISIBLE, value).apply() }
 
+    /** Shown to whoever you match with, alongside the pseudonym (see [ProfileEnvelope]) - unlike
+     *  the pseudonym, always has a value once read, matching the "Male/Female, required" choice
+     *  made for this field; defaults on first read exactly like [pseudonym] does. */
+    var gender: Gender
+        get() {
+            val stored = prefs.getString(KEY_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() }
+            if (stored != null) return stored
+            val generated = Gender.entries[Random.nextInt(Gender.entries.size)]
+            prefs.edit().putString(KEY_GENDER, generated.name).apply()
+            return generated
+        }
+        set(value) { prefs.edit().putString(KEY_GENDER, value.name).apply() }
+
+    /** Optional; null means not shared. Clamped to a plausible human range so a peer can't be
+     *  sent (or send) a nonsense value. */
+    var age: Int?
+        get() = prefs.getInt(KEY_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE }
+        set(value) { prefs.edit().putInt(KEY_AGE, value?.coerceIn(MIN_AGE, MAX_AGE) ?: -1).apply() }
+
+    /** Optional short free-text description, shown to whoever you match with. */
+    var bio: String
+        get() = prefs.getString(KEY_BIO, null) ?: ""
+        set(value) { prefs.edit().putString(KEY_BIO, value.trim().take(MAX_BIO_LENGTH)).apply() }
+
     companion object {
         private const val PREFS_FILE = "frad_profile"
         private const val KEY_PSEUDONYM = "pseudonym"
@@ -71,8 +97,14 @@ class Profile(context: Context) {
         private const val KEY_RADIUS_KM = "search_radius_km"
         private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
         private const val KEY_ALWAYS_VISIBLE = "always_visible"
+        private const val KEY_GENDER = "gender"
+        private const val KEY_AGE = "age"
+        private const val KEY_BIO = "bio"
         private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
+        const val MAX_BIO_LENGTH = 140
+        const val MIN_AGE = 13
+        const val MAX_AGE = 120
 
         /** Short, stable suffix derived from a peer's long-term id, so that two people who
          *  both picked the same pseudonym still show up distinctly, e.g. "Alex#9F21A0". */

@@ -27,6 +27,7 @@ import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
 import app.frad.chat.pairing.SignalStrength
 import app.frad.chat.profile.Profile
+import app.frad.chat.profile.ProfileEnvelope
 import app.frad.chat.safety.BlockList
 import app.frad.chat.safety.Cooldown
 import app.frad.chat.safety.DeviceFingerprint
@@ -403,18 +404,22 @@ class BleChatController(
                 }
                 connection.remoteDeviceFingerprint = remoteFingerprint
                 connection.step = HandshakeStep.EXPECT_PROFILE
-                val ciphertext = connection.session.encryptMessage(profile.pseudonym)
+                val ciphertext = connection.session.encryptMessage(ProfileEnvelope.encode(context, profile))
                 if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
             }
             HandshakeStep.EXPECT_PROFILE -> {
-                val remotePseudonym = connection.session.decryptMessage(frame)
+                val remoteProfile = ProfileEnvelope.decode(connection.session.decryptMessage(frame))
                 connection.step = HandshakeStep.READY
                 disarmConnectionTimeout()
                 val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
                     remotePeerId = remotePeerId,
                     remoteDeviceFingerprint = connection.remoteDeviceFingerprint!!,
-                    remotePseudonym = remotePseudonym,
+                    remotePseudonym = remoteProfile.pseudonym,
+                    remoteGender = remoteProfile.gender,
+                    remoteAge = remoteProfile.age,
+                    remoteBio = remoteProfile.bio,
+                    remotePhoto = remoteProfile.photo,
                     messages = if (contactStore.isSaved(remotePeerId)) historyStore.messagesFor(remotePeerId) else emptyList(),
                 )
             }
