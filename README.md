@@ -172,6 +172,13 @@ thing as "updating" across that change, and your old install's local data
 the old one and install fresh; this is also a one-time fix, and combines with
 the signing-key one above if you're coming from a build before both.
 
+**Updating from a build before the `app.frad.chat` rename:** the
+`applicationId` changed again, from `me.woelki.frad` to `app.frad.chat` —
+the old one embedded the maintainer's personal domain, which wasn't
+intentional. Same story as above: Android sees it as a different app, so
+uninstall the old one and install fresh rather than expecting an in-place
+update.
+
 ## Building
 
 Requires JDK 17+ and the Android SDK (easiest: open the project root in a

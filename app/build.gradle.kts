@@ -39,12 +39,12 @@ val p2pAarFile = rootProject.file("p2p-go/build/p2pgo.aar")
 val hasP2pGoAar = p2pAarFile.exists()
 
 android {
-    namespace = "me.woelki.frad"
+    namespace = "app.frad.chat"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        applicationId = "me.woelki.frad"
+        applicationId = "app.frad.chat"
         // BLE presence/pairing (M1) needs the modern Android 12+ Bluetooth runtime
         // permission model (BLUETOOTH_SCAN/CONNECT/ADVERTISE); Wi-Fi Aware (planned
         // for a later milestone) needs API 26+. 26 is the floor for both.
@@ -53,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 24
-        versionName = "0.3.20"
+        versionCode = 25
+        versionName = "0.3.21"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -181,7 +181,7 @@ tasks.register<Exec>("gomobileBind") {
     commandLine(
         "gomobile", "bind",
         "-target=android", "-androidapi=26",
-        "-javapkg=me.woelki.frad.p2pgo",
+        "-javapkg=app.frad.chat.p2pgo",
         "-o", p2pAarFile.path,
         "./p2p-go/node",
     )
