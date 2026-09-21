@@ -92,26 +92,23 @@ class BleChatController(
     // access; synchronizedMap is a coarse but adequate mitigation for M1's single-active-
     // connection scope. A later milestone should route everything through one serial
     // dispatcher instead of relying on this.
-    private val discoveredByAddress = java.util.Collections.synchronizedMap(mutableMapOf<String, NearbyPeer>())
+    // Keyed by sessionId (our own app-level id, stable for as long as a peer's peripheral keeps
+    // running), not by the underlying BLE MAC address - Android can rotate a device's advertised
+    // address independently of that, which previously made the same physical peer reappear under
+    // a new key and pile up as a phantom extra "found" device instead of updating in place.
+    private val discoveredBySessionId = java.util.Collections.synchronizedMap(mutableMapOf<String, NearbyPeer>())
     private val addressBySessionId = java.util.Collections.synchronizedMap(mutableMapOf<String, String>())
     private val connections = java.util.Collections.synchronizedMap(mutableMapOf<String, Connection>())
     private var activeAddress: String? = null
     private var browsing = false
 
-    /** Our own currently-advertised session id (hex), so [requestRandomChat] can decide
-     *  who connects — see the glare comment there. */
-    private var advertisedSessionId: String? = null
-
     /** Guards against a stuck [ChatUiState.Connecting]/[ChatUiState.Handshaking]: if a peer
-     *  drops off mid-handshake, or a would-be responder's initiator never actually connects
-     *  (see [requestRandomChat]), this brings the UI back to browsing instead of hanging
-     *  forever and forcing the user to restart the app. */
+     *  drops off mid-handshake, or a connection attempt never completes, this brings the UI
+     *  back to browsing instead of hanging forever and forcing the user to restart the app. */
     private var connectionTimeoutJob: Job? = null
 
     private fun startAdvertisingSession() {
-        val sessionId = Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
-        advertisedSessionId = sessionId.joinToString("") { "%02x".format(it) }
-        peripheral.start(sessionId)
+        peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
     }
 
     private fun armConnectionTimeout(address: String) {
@@ -133,7 +130,7 @@ class BleChatController(
         if (enabled == browsing) return
         browsing = enabled
         if (enabled) {
-            discoveredByAddress.clear()
+            discoveredBySessionId.clear()
             addressBySessionId.clear()
             startAdvertisingSession()
             central.startScanning()
@@ -148,19 +145,22 @@ class BleChatController(
 
     /** Picks a random currently-visible peer and starts a chat with them.
      *
-     *  Both sides of a chat run the same BLE stack, so both are equally capable of
-     *  initiating — and with only a couple of peers nearby (the common case while testing),
-     *  it's easy for both users to tap "chat" around the same time and each pick the other.
-     *  If both then connected as a central (which used to also stop its own peripheral), each
-     *  device could end up racing to connect to a peripheral the other had just torn down,
-     *  and/or briefly running as both central and peripheral toward the same remote at once —
-     *  a classic BLE "glare" that left both sides stuck showing "Setting up an encrypted
-     *  connection…" forever. To avoid it, only the side whose advertised session id sorts
-     *  lower actually connects; the other stays put as a peripheral and waits to be connected
-     *  to. Both sides compare the same two ids, so exactly one of them initiates. */
+     *  Both sides of a chat run the same BLE stack, so in the rare case both users tap "chat"
+     *  at almost the same instant and each pick the other, both dial out while tearing down
+     *  their own peripheral — each connection attempt then fails since the peripheral it was
+     *  aimed at is already gone (a classic BLE "glare"). That's self-healing: [armConnectionTimeout]
+     *  below returns both sides to Browsing after 15s so a retry can succeed, since the exact
+     *  timing won't line up identically twice. A previous version tried to pre-empt this by
+     *  having whichever side's advertised session id sorted higher defer instead of connecting
+     *  at all — but that comparison ran for *every* chat request, contested or not, so on
+     *  ordinary, unilateral "chat with someone nearby" taps it deferred to a peer who was never
+     *  trying to connect back roughly half the time, leaving the tapper stuck on "Connecting…"
+     *  and the other device never even seeing a connection attempt. Always connecting is the
+     *  better trade: the common case works every time, and the rare double-tap case just costs
+     *  one 15s timeout instead of hanging indefinitely. */
     override fun requestRandomChat() {
         if (_state.value !is ChatUiState.Browsing) return
-        val picked = matcher.pickRandomPeer(discoveredByAddress.values.toList()) ?: return
+        val picked = matcher.pickRandomPeer(discoveredBySessionId.values.toList()) ?: return
         if (!cooldown.canRequest(picked.sessionId)) return
         val address = addressBySessionId[picked.sessionId] ?: return
 
@@ -168,14 +168,6 @@ class BleChatController(
         activeAddress = address
         _state.value = ChatUiState.Connecting(picked)
         armConnectionTimeout(address)
-
-        val mine = advertisedSessionId
-        if (mine != null && mine >= picked.sessionId) {
-            // Defer to the other side: stop looking for someone else, but stay
-            // advertising/connectable so they can reach us.
-            central.stopScanning()
-            return
-        }
 
         central.stopScanning() // one conversation at a time
         peripheral.stop()
@@ -291,12 +283,12 @@ class BleChatController(
         _transferStatus.value = null
         _state.value = ChatUiState.Ended(reason)
         if (browsing) {
-            // The peer list may now be stale — a peer's advertised address/session id
-            // rotates each time its own peripheral restarts (including right after a
-            // connection attempt like this one fails on its end too), so leftover entries
-            // here would otherwise just accumulate as phantom "one more device" duplicates
-            // rather than being replaced. Start clean and let scanning repopulate it.
-            discoveredByAddress.clear()
+            // The peer list may now be stale — a peer's session id rotates each time its own
+            // peripheral restarts (including right after a connection attempt like this one
+            // fails on its end too), so leftover entries here would otherwise just accumulate
+            // as phantom "one more device" duplicates rather than being replaced. Start clean
+            // and let scanning repopulate it.
+            discoveredBySessionId.clear()
             addressBySessionId.clear()
             peripheral.stop()
             startAdvertisingSession()
@@ -347,14 +339,16 @@ class BleChatController(
 
     override fun onPeerDiscovered(deviceAddress: String, sessionId: ByteArray, rssi: Int) {
         val sessionIdHex = sessionId.joinToString("") { "%02x".format(it) }
+        // Always refreshed to the latest address seen for this session id, in case the
+        // underlying BLE address rotated since we last heard from this same peer.
         addressBySessionId[sessionIdHex] = deviceAddress
-        discoveredByAddress[deviceAddress] = NearbyPeer(
+        discoveredBySessionId[sessionIdHex] = NearbyPeer(
             sessionId = sessionIdHex,
             lastSeenAtMillis = System.currentTimeMillis(),
             signalStrength = SignalStrength.Ble(rssi),
         )
         if (_state.value is ChatUiState.Browsing) {
-            _state.value = ChatUiState.Browsing(discoveredByAddress.values.toList())
+            _state.value = ChatUiState.Browsing(discoveredBySessionId.values.toList())
         }
     }
 
