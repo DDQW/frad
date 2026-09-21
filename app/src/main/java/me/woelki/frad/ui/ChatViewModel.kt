@@ -83,14 +83,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         set(value) { profile.bootstrapNodes = value }
 
     /** Looks up a one-shot, coarse-only location fix (requires the caller to already hold
-     *  ACCESS_COARSE_LOCATION - see RadarScreen's "Use my area" button) and immediately reduces
-     *  it to a [Geohash] cell, discarding the raw coordinate; stores and returns the result, or
-     *  null if the permission isn't granted or no location is available yet. */
+     *  ACCESS_COARSE_LOCATION - see RadarScreen's "Use my area" button), immediately reduces it
+     *  to a [Geohash] cell at [Geohash.MAX_PRECISION], and discards the raw coordinate - not the
+     *  (typically much coarser) precision actually shared for the wide-range layer, since a
+     *  geohash prefix at any shorter length is exactly that string truncated (geohash's
+     *  hierarchical property). Only that truncated, search-radius-matching prefix is what
+     *  actually gets stored/shared; the finer hash returned here exists only so the caller can
+     *  show an accurate area name for it (see AreaLookup) - reverse-geocoding the coarser stored
+     *  hash instead previously showed a place tens of km off, easily a different city entirely
+     *  once the search radius (and so the shared hash's cell) is wider than "Neighborhood".
+     *  Returns null if the permission isn't granted or no location is available yet. */
     fun useCurrentAreaAsGeohash(): String? {
-        val precision = Geohash.precisionForRadiusKm(profile.searchRadiusKm)
-        val geohash = CoarseLocation.lastKnownGeohash(getApplication(), precision) ?: return null
-        profile.coarseGeohash = geohash
-        return geohash
+        val fineHash = CoarseLocation.lastKnownGeohash(getApplication(), Geohash.MAX_PRECISION) ?: return null
+        val sharePrecision = Geohash.precisionForRadiusKm(profile.searchRadiusKm)
+        profile.coarseGeohash = fineHash.take(sharePrecision)
+        return fineHash
     }
 
     /** Only switches while idle on the outgoing layer, mirroring [ChatController.setBrowsing]'s
