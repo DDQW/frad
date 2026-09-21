@@ -1,6 +1,7 @@
 package me.woelki.frad
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import me.woelki.frad.ui.ChatViewModel
 import me.woelki.frad.ui.RadarScreen
 import me.woelki.frad.ui.theme.FradTheme
@@ -43,14 +45,24 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         permissionsGranted = grants.values.all { it }
+        if (permissionsGranted) onCorePermissionsGranted()
+    }
+
+    // Separate from requiredPermissions/permissionsGranted: this one only gates whether
+    // LocalBleService's "always visible" notification is actually visible, not any core
+    // functionality - denying it shouldn't lock the user out of the rest of the app the way
+    // denying Bluetooth does, so it's requested independently and the service starts either way.
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.onPermissionsGranted()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         permissionsGranted = requiredPermissions.all {
-            androidx.core.content.ContextCompat.checkSelfPermission(this, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
+        if (permissionsGranted) onCorePermissionsGranted()
 
         setContent {
             FradTheme {
@@ -62,6 +74,20 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /** Core BLE permissions are granted - safe to let [ChatViewModel] start the always-visible
+     *  background service now (see [ChatViewModel.onPermissionsGranted]). Requests the separate,
+     *  non-blocking notification permission first on API 33+ so that service's persistent
+     *  notification actually shows; starts regardless of that specific grant either way. */
+    private fun onCorePermissionsGranted() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.onPermissionsGranted()
         }
     }
 }

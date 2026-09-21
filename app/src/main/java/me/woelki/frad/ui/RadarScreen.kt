@@ -74,6 +74,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -814,6 +815,7 @@ private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Un
 @Composable
 private fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
+    var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
     var bootstrapDraft by remember { mutableStateOf(viewModel.bootstrapNodes.joinToString("\n")) }
     var locationDenied by remember { mutableStateOf(false) }
@@ -875,6 +877,28 @@ private fun ProfileTab(viewModel: ChatViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        SectionCard(title = "Visibility") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Always visible", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Keep FRAD discoverable in the background, even when it's not open, " +
+                            "so people can actually find and message you. Shows an ongoing " +
+                            "notification while active - never a silent background broadcast.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = alwaysVisible,
+                    onCheckedChange = {
+                        alwaysVisible = it
+                        viewModel.alwaysVisible = it
+                    },
+                )
+            }
         }
 
         SectionCard(title = "Wide-range (internet)") {

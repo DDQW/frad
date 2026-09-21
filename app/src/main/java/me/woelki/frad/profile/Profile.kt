@@ -51,12 +51,26 @@ class Profile(context: Context) {
         get() = prefs.getString(KEY_BOOTSTRAP_NODES, null)?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         set(value) { prefs.edit().putString(KEY_BOOTSTRAP_NODES, value.joinToString("\n")).apply() }
 
+    /** Whether local BLE discovery/chat should keep running in the background - via
+     *  [me.woelki.frad.ble.LocalBleService] as a foreground service with a persistent
+     *  notification, never silently - instead of only while the app is open. Defaults to true:
+     *  an app whose whole purpose is meeting nearby people is of little use if both people
+     *  happen to have it open on-screen at the same moment, so out-of-the-box FRAD favors
+     *  actually being reachable over the more conservative "explicit opt-in every session"
+     *  stance the app used to default to. Still a real, visible, one-tap-to-disable setting -
+     *  not a silent background broadcast - and the manual "Become visible"/"Stop being visible"
+     *  toggle in the Radar tab always works session-locally regardless of this setting. */
+    var alwaysVisible: Boolean
+        get() = prefs.getBoolean(KEY_ALWAYS_VISIBLE, true)
+        set(value) { prefs.edit().putBoolean(KEY_ALWAYS_VISIBLE, value).apply() }
+
     companion object {
         private const val PREFS_FILE = "frad_profile"
         private const val KEY_PSEUDONYM = "pseudonym"
         private const val KEY_GEOHASH = "coarse_geohash"
         private const val KEY_RADIUS_KM = "search_radius_km"
         private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
+        private const val KEY_ALWAYS_VISIBLE = "always_visible"
         private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
 

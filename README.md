@@ -40,8 +40,13 @@ found them.
   coarse geohash cell (city-sized or coarser; see `wideradius/Geohash.kt` and
   `wideradius/CoarseLocation.kt`, which reduces a location fix to a geohash
   and discards the raw coordinate in the same function call).
-- "Available to chat" is an explicit opt-in toggle, off by default, not a
-  silent background broadcast.
+- "Available to chat" is a real, visible, one-tap-to-disable toggle - never a
+  *silent* background broadcast. It defaults to on (`Profile.alwaysVisible`),
+  since an app whose whole point is meeting nearby people isn't much use if
+  both sides have to happen to have it open at the same moment; running in
+  the background is a real Android foreground service with a persistent,
+  honest notification ("FRAD is looking for friends") the whole time it's
+  active, and turning it off in Profile settings is one switch away.
 - The rotating id you're discovered by is *not* your long-term identity key —
   a peer only learns who they actually matched with once an encrypted session
   is already established with them specifically, so passively scanning for
@@ -216,9 +221,12 @@ in and a reachable bootstrap node configured in Profile on both phones.
 - `ble/` — BLE presence advertising/scanning (`BlePeripheralServer`,
   `BleCentralClient`), message fragmentation over the GATT MTU (`Framing`,
   also reused by the wide-range layer's framing, just never split into more
-  than one piece), and `BleChatController`, which wires all of the above plus
+  than one piece), `BleChatController`, which wires all of the above plus
   pairing/safety and Wi-Fi Direct file-transfer orchestration into the state
-  machine the UI drives.
+  machine the UI drives, and `LocalBleService`, the foreground service that
+  hosts that controller outside any Activity/ViewModel lifecycle so it can
+  keep running in the background (see `Profile.alwaysVisible` above) -
+  `ChatViewModel` binds to it rather than constructing its own controller.
 - `wifidirect/` — `WifiDirectTransferManager`, the one place `WifiP2pManager`
   is touched: creates/joins a one-off Wi-Fi Direct group per file transfer
   and streams the encrypted bytes over a socket. API 29+ only.

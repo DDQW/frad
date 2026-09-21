@@ -1,19 +1,26 @@
 package me.woelki.frad.ui
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.ContentResolver
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.net.Uri
+import android.os.IBinder
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
-import me.woelki.frad.ble.BleChatController
+import me.woelki.frad.ble.LocalBleService
 import me.woelki.frad.chat.ChatController
 import me.woelki.frad.chat.ChatMessage
 import me.woelki.frad.chat.ChatUiState
@@ -42,24 +49,50 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val mediaFileStore = MediaFileStore(application)
     private val blockList = BlockList(application)
 
-    private val bleController: ChatController = BleChatController(application, identity, profile)
+    // Local BLE is owned by LocalBleService, not this ViewModel, so it can keep running in the
+    // background when Profile.alwaysVisible is on - see that service's doc comment. Null only for
+    // the brief window before the same-process bind completes; every read below falls back to a
+    // harmless idle/no-op rather than assuming that window has already closed.
+    private val _bleController = MutableStateFlow<ChatController?>(null)
     private val wideController: ChatController =
         WideRangeChatController(application, identity, profile, WideRangeNode(application))
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            _bleController.value = (service as LocalBleService.LocalBinder).controller
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            _bleController.value = null
+        }
+    }
+
+    init {
+        application.bindService(Intent(application, LocalBleService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        getApplication<Application>().unbindService(serviceConnection)
+    }
 
     private val _mode = MutableStateFlow(ChatMode.LOCAL_BLE)
     val mode: StateFlow<ChatMode> = _mode.asStateFlow()
     val wideRangeAvailable: Boolean get() = WideRangeNode.isSupported
 
-    private fun controllerFor(mode: ChatMode): ChatController = if (mode == ChatMode.LOCAL_BLE) bleController else wideController
-    private val activeController: ChatController get() = controllerFor(_mode.value)
+    private fun controllerFlow(mode: ChatMode): Flow<ChatController?> =
+        if (mode == ChatMode.LOCAL_BLE) _bleController else flowOf(wideController)
+    private val activeController: ChatController?
+        get() = if (_mode.value == ChatMode.LOCAL_BLE) _bleController.value else wideController
 
     // flatMapLatest keeps this a single stable StateFlow reference across mode switches, so
     // RadarScreen's collectAsState() never needs to know two controllers exist underneath.
-    val state: StateFlow<ChatUiState> = _mode.flatMapLatest { controllerFor(it).state }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState.Idle)
-    val transferStatus: StateFlow<String?> = _mode.flatMapLatest { controllerFor(it).transferStatus }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val fileTransferAvailable: Boolean get() = activeController.fileTransferAvailable
+    val state: StateFlow<ChatUiState> = _mode.flatMapLatest { mode ->
+        controllerFlow(mode).flatMapLatest { it?.state ?: flowOf(ChatUiState.Idle) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState.Idle)
+    val transferStatus: StateFlow<String?> = _mode.flatMapLatest { mode ->
+        controllerFlow(mode).flatMapLatest { it?.transferStatus ?: flowOf(null) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val fileTransferAvailable: Boolean get() = activeController?.fileTransferAvailable ?: false
     val myPeerId: String get() = identity.peerId
 
     private val _errorEvent = MutableStateFlow<String?>(null)
@@ -82,6 +115,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         get() = profile.bootstrapNodes
         set(value) { profile.bootstrapNodes = value }
 
+    /** See [Profile.alwaysVisible] / [LocalBleService]. Setting this also immediately starts or
+     *  drops the persistent foreground service - safe to call any time this ViewModel's UI is
+     *  reachable at all, since that already implies BLE permissions were granted. */
+    var alwaysVisible: Boolean
+        get() = profile.alwaysVisible
+        set(value) {
+            profile.alwaysVisible = value
+            val app = getApplication<Application>()
+            if (value) LocalBleService.startAlwaysVisible(app) else LocalBleService.stopAlwaysVisible(app)
+        }
+
     /** Looks up a one-shot, coarse-only location fix (requires the caller to already hold
      *  ACCESS_COARSE_LOCATION - see RadarScreen's "Use my area" button), immediately reduces it
      *  to a [Geohash] cell at [Geohash.MAX_PRECISION], and discards the raw coordinate - not the
@@ -100,20 +144,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return fineHash
     }
 
+    /** Called once by [me.woelki.frad.MainActivity] as soon as it knows BLE permissions are
+     *  granted (on launch if already granted, or right after the grant prompt) - starting the
+     *  always-visible service any earlier would call into BLE APIs before they're allowed to be
+     *  used. A no-op if [Profile.alwaysVisible] is off. */
+    fun onPermissionsGranted() {
+        if (profile.alwaysVisible) LocalBleService.startAlwaysVisible(getApplication())
+    }
+
     /** Only switches while idle on the outgoing layer, mirroring [ChatController.setBrowsing]'s
      *  own guard against switching transport mid-chat. */
     fun setMode(newMode: ChatMode) {
         if (_mode.value == newMode) return
-        controllerFor(_mode.value).setBrowsing(false)
+        activeController?.setBrowsing(false)
         _mode.value = newMode
     }
 
-    fun setBrowsing(enabled: Boolean) = activeController.setBrowsing(enabled)
-    fun requestRandomChat() = activeController.requestRandomChat()
-    fun sendMessage(text: String) = activeController.sendMessage(text)
-    fun endChat() = activeController.endActiveConnection("you left")
-    fun blockActivePeer() = activeController.blockActivePeer()
-    fun reportActivePeer(reason: String) = activeController.reportActivePeer(reason)
+    fun setBrowsing(enabled: Boolean) { activeController?.setBrowsing(enabled) }
+    fun requestRandomChat() { activeController?.requestRandomChat() }
+    fun sendMessage(text: String) { activeController?.sendMessage(text) }
+    fun endChat() { activeController?.endActiveConnection("you left") }
+    fun blockActivePeer() { activeController?.blockActivePeer() }
+    fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 
     /** Reads [uri] fully into memory (files this small are the whole point of the 25 MB cap)
      *  and hands it to the active controller; surfaces [errorEvent] instead of sending if the
@@ -131,7 +183,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         val mimeType = resolver.getType(uri) ?: "application/octet-stream"
         val fileName = displayNameOf(resolver, uri) ?: "file"
-        activeController.sendFile(bytes, fileName, mimeType)
+        activeController?.sendFile(bytes, fileName, mimeType)
     }
 
     private fun displayNameOf(resolver: ContentResolver, uri: Uri): String? {
