@@ -199,6 +199,28 @@ class BlePeripheralServer(
                 gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, null)
             }
         }
+
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            descriptor: BluetoothGattDescriptor,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray,
+        ) {
+            // The central writes this descriptor to enable notifications right after service
+            // discovery (see BleCentralClient.onServicesDiscovered) and waits for its own
+            // onDescriptorWrite callback before proceeding to the handshake. Without a response
+            // to this request, that write never completes at the ATT protocol level - the
+            // central's callback never fires, and it sits on "Connecting" forever. This handler
+            // was missing entirely, which is why every single connection attempt stalled at
+            // exactly this point.
+            Log.d(TAG, "onDescriptorWriteRequest addr=${device.address} uuid=${descriptor.uuid}")
+            if (responseNeeded) {
+                gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, value)
+            }
+        }
     }
 
     private companion object {
