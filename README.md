@@ -158,6 +158,15 @@ of those will fail with a signing-certificate mismatch. Uninstall the old one
 first; every build from now on shares the fixed key above, so this is a
 one-time fix.
 
+**Updating from a build before the `me.woelki.frad` rename:** the app's
+package (`applicationId`) was `me.woelki.friendradar` until this project's
+internal naming caught up with calling it FRAD everywhere. Android treats a
+different `applicationId` as a different app entirely — there's no such
+thing as "updating" across that change, and your old install's local data
+(profile, contacts, chat history, block list) doesn't carry over. Uninstall
+the old one and install fresh; this is also a one-time fix, and combines with
+the signing-key one above if you're coming from a build before both.
+
 ## Building
 
 Requires JDK 17+ and the Android SDK (easiest: open the project root in a

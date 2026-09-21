@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Exposes only me.woelki.friendradar.data.MediaFileStore's directory via FileProvider,
+<!-- Exposes only me.woelki.frad.data.MediaFileStore's directory via FileProvider,
      for the "Open" action on a received Wi-Fi Direct file (M3) - nothing else in the app's
      private storage is reachable through this. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
