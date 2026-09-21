@@ -61,6 +61,34 @@ object Geohash {
         return result.toString()
     }
 
+    /** Inverse of [encode]: the center point of a geohash cell. Used only to turn a stored/typed
+     *  geohash back into coordinates for a human-readable place name lookup (see
+     *  [me.woelki.frad.wideradius.AreaLookup]) — never re-transmitted at this precision. */
+    fun decode(geohash: String): Pair<Double, Double> {
+        var latLow = -90.0
+        var latHigh = 90.0
+        var lonLow = -180.0
+        var lonHigh = 180.0
+        var isLongitudeBit = true
+
+        for (char in geohash.lowercase()) {
+            val charIndex = BASE32.indexOf(char)
+            if (charIndex < 0) continue
+            for (bit in 4 downTo 0) {
+                val bitValue = (charIndex shr bit) and 1
+                if (isLongitudeBit) {
+                    val mid = (lonLow + lonHigh) / 2
+                    if (bitValue == 1) lonLow = mid else lonHigh = mid
+                } else {
+                    val mid = (latLow + latHigh) / 2
+                    if (bitValue == 1) latLow = mid else latHigh = mid
+                }
+                isLongitudeBit = !isLongitudeBit
+            }
+        }
+        return (latLow + latHigh) / 2 to (lonLow + lonHigh) / 2
+    }
+
     /**
      * Maps a desired search radius to the finest geohash precision whose cell
      * is still at least [radiusKm] wide — i.e. the smallest cell that

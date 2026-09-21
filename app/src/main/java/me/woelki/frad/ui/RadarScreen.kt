@@ -28,10 +28,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,11 +42,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import java.io.File
+import kotlinx.coroutines.launch
 import me.woelki.frad.chat.ChatMessage
 import me.woelki.frad.chat.ChatUiState
 import me.woelki.frad.chat.MessageKind
 import me.woelki.frad.contacts.Contact
 import me.woelki.frad.profile.Profile
+import me.woelki.frad.wideradius.AreaLookup
+import me.woelki.frad.wideradius.Geohash
 
 private enum class Tab { RADAR, CONTACTS, BLOCKED, PROFILE }
 
@@ -370,13 +375,40 @@ private val RADIUS_PRESETS = listOf(20.0 to "Neighborhood", 75.0 to "City", 600.
 @Composable
 private fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
-    var geohashDraft by remember { mutableStateOf(viewModel.coarseGeohash ?: "") }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
     var bootstrapDraft by remember { mutableStateOf(viewModel.bootstrapNodes.joinToString("\n")) }
     var locationDenied by remember { mutableStateOf(false) }
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var areaNameDraft by remember { mutableStateOf("") }
+    var areaStatus by remember { mutableStateOf<String?>(null) }
+    var resolvingArea by remember { mutableStateOf(false) }
+
+    // The stored area is a geohash (see Profile.coarseGeohash) - show it as a place name instead
+    // of that cryptic code by reverse-geocoding it once when this screen first appears.
+    LaunchedEffect(Unit) {
+        val saved = viewModel.coarseGeohash ?: return@LaunchedEffect
+        areaNameDraft = AreaLookup.nameFor(context, saved) ?: saved
+    }
+
     val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) viewModel.useCurrentAreaAsGeohash()?.let { geohashDraft = it } else locationDenied = true
+        if (!granted) {
+            locationDenied = true
+            return@rememberLauncherForActivityResult
+        }
+        locationDenied = false
+        val geohash = viewModel.useCurrentAreaAsGeohash()
+        if (geohash == null) {
+            areaStatus = "Couldn't get a location fix yet - try again in a moment."
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            resolvingArea = true
+            areaNameDraft = AreaLookup.nameFor(context, geohash) ?: geohash
+            areaStatus = null
+            resolvingArea = false
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -401,16 +433,46 @@ private fun ProfileTab(viewModel: ChatViewModel) {
         Text("Wide-range (internet)", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Your area, as a coarse cell roughly the size of the search radius below - never your exact location.",
+            "Your area, as a place name - it's only ever reduced to a coarse cell roughly the " +
+                "size of the search radius below before it's shared, never your exact location.",
             style = MaterialTheme.typography.bodySmall,
         )
-        OutlinedTextField(value = geohashDraft, onValueChange = { geohashDraft = it }, label = { Text("Area (geohash)") })
+        OutlinedTextField(
+            value = areaNameDraft,
+            onValueChange = { areaNameDraft = it; areaStatus = null },
+            label = { Text("Area") },
+            placeholder = { Text("e.g. Berlin, Germany") },
+        )
         Row {
             TextButton(onClick = { locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION) }) { Text("Use my area") }
-            TextButton(onClick = { viewModel.coarseGeohash = geohashDraft.trim().ifEmpty { null } }) { Text("Save area") }
+            TextButton(onClick = {
+                val query = areaNameDraft.trim()
+                if (query.isEmpty()) {
+                    viewModel.coarseGeohash = null
+                    areaStatus = null
+                    return@TextButton
+                }
+                scope.launch {
+                    resolvingArea = true
+                    val geohash = AreaLookup.geohashFor(context, query, Geohash.precisionForRadiusKm(radiusKm))
+                    if (geohash != null) {
+                        viewModel.coarseGeohash = geohash
+                        areaStatus = null
+                    } else {
+                        areaStatus = "Couldn't find that place - try a nearby city name."
+                    }
+                    resolvingArea = false
+                }
+            }) { Text("Save area") }
+        }
+        if (resolvingArea) {
+            Text("Looking that up…", style = MaterialTheme.typography.bodySmall)
         }
         if (locationDenied) {
-            Text("Location permission denied - type your area's geohash manually instead.", style = MaterialTheme.typography.bodySmall)
+            Text("Location permission denied - type your area's name instead.", style = MaterialTheme.typography.bodySmall)
+        }
+        if (areaStatus != null) {
+            Text(areaStatus!!, style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(Modifier.height(12.dp))
