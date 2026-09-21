@@ -5,7 +5,9 @@ import android.os.Build
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -96,6 +98,35 @@ class BleChatController(
     private var activeAddress: String? = null
     private var browsing = false
 
+    /** Our own currently-advertised session id (hex), so [requestRandomChat] can decide
+     *  who connects — see the glare comment there. */
+    private var advertisedSessionId: String? = null
+
+    /** Guards against a stuck [ChatUiState.Connecting]/[ChatUiState.Handshaking]: if a peer
+     *  drops off mid-handshake, or a would-be responder's initiator never actually connects
+     *  (see [requestRandomChat]), this brings the UI back to browsing instead of hanging
+     *  forever and forcing the user to restart the app. */
+    private var connectionTimeoutJob: Job? = null
+
+    private fun startAdvertisingSession() {
+        val sessionId = Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
+        advertisedSessionId = sessionId.joinToString("") { "%02x".format(it) }
+        peripheral.start(sessionId)
+    }
+
+    private fun armConnectionTimeout(address: String) {
+        connectionTimeoutJob?.cancel()
+        connectionTimeoutJob = scope.launch {
+            delay(CONNECTION_TIMEOUT_MILLIS)
+            if (activeAddress == address) endActiveConnection("connection timed out")
+        }
+    }
+
+    private fun disarmConnectionTimeout() {
+        connectionTimeoutJob?.cancel()
+        connectionTimeoutJob = null
+    }
+
     /** The user-facing "make me discoverable" toggle. Off by default and never
      *  persisted across app restarts — see the safety-by-design notes in the plan. */
     override fun setBrowsing(enabled: Boolean) {
@@ -104,7 +135,7 @@ class BleChatController(
         if (enabled) {
             discoveredByAddress.clear()
             addressBySessionId.clear()
-            peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
+            startAdvertisingSession()
             central.startScanning()
             _state.value = ChatUiState.Browsing(emptyList())
         } else {
@@ -115,7 +146,18 @@ class BleChatController(
         }
     }
 
-    /** Picks a random currently-visible peer and starts a chat with them. */
+    /** Picks a random currently-visible peer and starts a chat with them.
+     *
+     *  Both sides of a chat run the same BLE stack, so both are equally capable of
+     *  initiating — and with only a couple of peers nearby (the common case while testing),
+     *  it's easy for both users to tap "chat" around the same time and each pick the other.
+     *  If both then connected as a central (which used to also stop its own peripheral), each
+     *  device could end up racing to connect to a peripheral the other had just torn down,
+     *  and/or briefly running as both central and peripheral toward the same remote at once —
+     *  a classic BLE "glare" that left both sides stuck showing "Setting up an encrypted
+     *  connection…" forever. To avoid it, only the side whose advertised session id sorts
+     *  lower actually connects; the other stays put as a peripheral and waits to be connected
+     *  to. Both sides compare the same two ids, so exactly one of them initiates. */
     override fun requestRandomChat() {
         if (_state.value !is ChatUiState.Browsing) return
         val picked = matcher.pickRandomPeer(discoveredByAddress.values.toList()) ?: return
@@ -125,6 +167,16 @@ class BleChatController(
         cooldown.recordRequest(picked.sessionId)
         activeAddress = address
         _state.value = ChatUiState.Connecting(picked)
+        armConnectionTimeout(address)
+
+        val mine = advertisedSessionId
+        if (mine != null && mine >= picked.sessionId) {
+            // Defer to the other side: stop looking for someone else, but stay
+            // advertising/connectable so they can reach us.
+            central.stopScanning()
+            return
+        }
+
         central.stopScanning() // one conversation at a time
         peripheral.stop()
         central.connect(address)
@@ -228,6 +280,7 @@ class BleChatController(
     }
 
     override fun endActiveConnection(reason: String) {
+        disarmConnectionTimeout()
         val address = activeAddress
         if (address != null) {
             val connection = connections[address]
@@ -238,9 +291,17 @@ class BleChatController(
         _transferStatus.value = null
         _state.value = ChatUiState.Ended(reason)
         if (browsing) {
-            peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
+            // The peer list may now be stale — a peer's advertised address/session id
+            // rotates each time its own peripheral restarts (including right after a
+            // connection attempt like this one fails on its end too), so leftover entries
+            // here would otherwise just accumulate as phantom "one more device" duplicates
+            // rather than being replaced. Start clean and let scanning repopulate it.
+            discoveredByAddress.clear()
+            addressBySessionId.clear()
+            peripheral.stop()
+            startAdvertisingSession()
             central.startScanning()
-            _state.value = ChatUiState.Browsing(discoveredByAddress.values.toList())
+            _state.value = ChatUiState.Browsing(emptyList())
         }
     }
 
@@ -259,12 +320,20 @@ class BleChatController(
     // ---- BlePeripheralServer.Listener (inbound / "someone connected to us") ----
 
     override fun onCentralConnected(deviceAddress: String) {
-        if (activeAddress != null) {
+        // Normally activeAddress is only set once we're already talking to someone, so any
+        // other inbound connection is "busy, go away". But requestRandomChat also sets it
+        // (state Connecting) for the side that's deferring to the other's connection attempt
+        // instead of dialing out itself (see its comment) — that's this connection arriving,
+        // not a second one, even though the address the remote connects in on isn't guaranteed
+        // to be the exact address we originally discovered them at while scanning.
+        val awaitingInboundHandshake = _state.value is ChatUiState.Connecting
+        if (activeAddress != null && !awaitingInboundHandshake) {
             peripheral.disconnectDevice(deviceAddress) // already busy with another chat
             return
         }
         activeAddress = deviceAddress
         connections[deviceAddress] = Connection(ChatSession(isInitiator = false, identity = identity), isOutbound = false)
+        armConnectionTimeout(deviceAddress)
         _state.value = ChatUiState.Handshaking
     }
 
@@ -292,6 +361,7 @@ class BleChatController(
     override fun onConnected(deviceAddress: String) {
         val connection = Connection(ChatSession(isInitiator = true, identity = identity), isOutbound = true)
         connections[deviceAddress] = connection
+        armConnectionTimeout(deviceAddress)
         _state.value = ChatUiState.Handshaking
         central.sendFrame(deviceAddress, connection.session.startHandshake())
     }
@@ -335,6 +405,7 @@ class BleChatController(
             HandshakeStep.EXPECT_PROFILE -> {
                 val remotePseudonym = connection.session.decryptMessage(frame)
                 connection.step = HandshakeStep.READY
+                disarmConnectionTimeout()
                 val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
                     remotePeerId = remotePeerId,
@@ -377,5 +448,9 @@ class BleChatController(
         connection.step = HandshakeStep.EXPECT_DEVICE_ID
         val ciphertext = connection.session.encryptMessage(deviceFingerprint)
         if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
+    }
+
+    private companion object {
+        const val CONNECTION_TIMEOUT_MILLIS = 15_000L
     }
 }
