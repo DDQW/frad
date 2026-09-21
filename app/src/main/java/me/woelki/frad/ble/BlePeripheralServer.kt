@@ -173,6 +173,13 @@ class BlePeripheralServer(
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
             notifyInFlight[device.address] = false
+            if (status != android.bluetooth.BluetoothGatt.GATT_SUCCESS) {
+                // Same reasoning as the central side's onCharacteristicWrite: a dropped
+                // fragment would otherwise desync the peer's FrameReassembler forever, so
+                // disconnect cleanly instead of pumping the next fragment regardless.
+                gattServer?.cancelConnection(device)
+                return
+            }
             pumpNotifyQueue(device.address)
         }
 

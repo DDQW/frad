@@ -99,8 +99,12 @@ class BleCentralClient(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connections[gatt.device.address] = DeviceConnection(gatt)
+                    // discoverServices() has to wait for this MTU request's own callback (see
+                    // onMtuChanged) rather than firing right away - issuing it while the MTU
+                    // request is still in flight is the same "only one GATT op at a time"
+                    // hazard as the descriptor-write comment below, and could silently strand
+                    // the connection before services are ever discovered.
                     gatt.requestMtu(GattProfile.DEFAULT_MTU)
-                    gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connections.remove(gatt.device.address)
@@ -115,17 +119,28 @@ class BleCentralClient(
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 connection.fragmentSize = mtu - GattProfile.ATT_HEADER_SIZE
             }
+            // A failed MTU negotiation isn't fatal (fragmentSize just stays at the legacy
+            // default), but this is the earliest point it's safe to issue the next GATT
+            // operation - see the comment on requestMtu above.
+            gatt.discoverServices()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             val connection = connections[gatt.device.address] ?: return
-            val service = gatt.getService(GattProfile.SERVICE_UUID) ?: return
-            connection.inbox = service.getCharacteristic(GattProfile.INBOX_CHARACTERISTIC_UUID)
-            val outbox = service.getCharacteristic(GattProfile.OUTBOX_CHARACTERISTIC_UUID)
-            val cccd = outbox?.let {
-                gatt.setCharacteristicNotification(it, true)
-                it.getDescriptor(GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID)
+            val service = if (status == BluetoothGatt.GATT_SUCCESS) gatt.getService(GattProfile.SERVICE_UUID) else null
+            val outbox = service?.getCharacteristic(GattProfile.OUTBOX_CHARACTERISTIC_UUID)
+            val inbox = service?.getCharacteristic(GattProfile.INBOX_CHARACTERISTIC_UUID)
+            if (service == null || outbox == null || inbox == null) {
+                // Service discovery failed, or this peer's GATT server doesn't actually expose
+                // what we expect - press on and the peer would just sit there waiting for a
+                // handshake byte that's never coming. Disconnect cleanly instead; the resulting
+                // onConnectionStateChange(DISCONNECTED) surfaces it as a normal failed attempt.
+                gatt.disconnect()
+                return
             }
+            connection.inbox = inbox
+            gatt.setCharacteristicNotification(outbox, true)
+            val cccd = outbox.getDescriptor(GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID)
 
             if (cccd != null) {
                 // A GATT connection only ever has one operation in flight at a time, so the
@@ -144,14 +159,24 @@ class BleCentralClient(
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (descriptor.uuid == GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID) {
-                listener.onConnected(gatt.device.address)
+            if (descriptor.uuid != GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                gatt.disconnect()
+                return
             }
+            listener.onConnected(gatt.device.address)
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             val connection = connections[gatt.device.address] ?: return
             connection.writeInFlight = false
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                // A dropped fragment would otherwise desync the peer's FrameReassembler forever
+                // (it keeps waiting for bytes that already silently failed to send) - disconnect
+                // cleanly instead of pumping the next fragment as if this one had gone through.
+                gatt.disconnect()
+                return
+            }
             pumpWriteQueue(gatt.device.address)
         }
 
