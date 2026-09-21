@@ -53,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 12
-        versionName = "0.3.8"
+        versionCode = 13
+        versionName = "0.3.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -64,6 +64,31 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            // AGP's *implicit* debug signing config auto-generates
+            // ~/.android/debug.keystore with fresh random key material the
+            // first time anything needs it on a given machine - which on
+            // GitHub Actions means every run, since each one starts from a
+            // clean VM. Every CI-built release (signed with this "debug"
+            // config as the fallback below, since no real release key exists
+            // yet) therefore got a different signing certificate, and Android
+            // refuses to install an update whose signature doesn't match
+            // what's already installed ("signing certificates do not match" /
+            // INSTALL_FAILED_UPDATE_INCOMPATIBLE). ci-debug.keystore is a
+            // fixed, checked-in, deliberately non-secret keystore (standard
+            // debug alias/passwords) that replaces that per-machine default,
+            // so consecutive CI builds - and local debug builds, which now
+            // share it too - keep the same identity and install as updates
+            // over each other. It is not a substitute for a real release key
+            // (see the M6 `hasReleaseSigningConfig` block below and the
+            // README's "F-Droid release packaging" section) and must never be
+            // treated as one - anyone can rebuild an APK that verifies
+            // against previously-published ones with it.
+            storeFile = rootProject.file("ci-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (hasReleaseSigningConfig) {
             create("release") {
                 storeFile = rootProject.file(releaseStoreFile!!)

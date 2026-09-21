@@ -13,6 +13,11 @@ local.properties
 *.jks
 keystore.properties
 !gradle/wrapper/gradle-wrapper.jar
+# Intentionally tracked despite *.keystore above - see the comment on it in
+# app/build.gradle.kts: a fixed, non-secret, shared signing key so every CI
+# build (and every dev's local debug build) produces installable-as-an-update
+# APKs instead of a fresh random one per machine.
+!ci-debug.keystore
 
 # p2p-go (M4): the gomobile .aar lands under p2p-go/build/, already covered by
 # build/ above; these are local build/run artifacts of the Go module itself.

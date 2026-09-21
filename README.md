@@ -118,7 +118,11 @@ you have it, or ask in an issue — the summary above is the durable version.
   gitignored `keystore.properties` (see `keystore.properties.sample`) or equivalently-named env
   vars, falling back to debug signing when neither is present (which is still true today — no
   real key has been generated yet); `.github/workflows/release.yml` decodes and wires that key
-  in from repo secrets when configured. Every Gradle/Kotlin/AndroidX/Bouncy Castle dependency
+  in from repo secrets when configured; until then, the debug fallback itself now uses a fixed,
+  checked-in `ci-debug.keystore` instead of AGP's implicit per-machine one, so consecutive CI
+  builds share a signing identity and install as updates over each other (previously every CI
+  run minted a new random debug key, breaking updates with a signing-certificate mismatch). Every
+  Gradle/Kotlin/AndroidX/Bouncy Castle dependency
   version here is already pinned exactly (no `+`/dynamic ranges), and `p2p-go/go.mod` +
   `go.sum` pin the Go side the same way, both of which reproducible builds need. The
   `metadata/en-US/` fastlane-format description F-Droid's listing uses already exists. Not yet
@@ -136,12 +140,23 @@ Every push to `master` is built and republished as the ["latest"
 release](../../releases/tag/latest) on the Releases page — grab the APK there
 if you just want to install it without building anything. Tagged versions
 (`vX.Y.Z`) get their own numbered release the same way. These builds are
-currently signed with the Gradle-generated debug key rather than a dedicated
-release key, since no maintainer key has been generated yet — that's fine for
-installing directly, but will change once one is (see `app/build.gradle.kts`
-and `keystore.properties.sample`, part of the M6 groundwork above). F-Droid's
+currently signed with a fixed, checked-in, deliberately non-secret debug
+key (`ci-debug.keystore`) rather than a dedicated release key, since no
+maintainer key has been generated yet — that's fine for installing directly,
+and every build shares the same signing identity so updating over a
+previous install works, but it offers no protection against someone else
+rebuilding an APK that also verifies against it. That'll change once a real
+release key exists (see `app/build.gradle.kts` and
+`keystore.properties.sample`, part of the M6 groundwork above). F-Droid's
 own listing, once it exists, signs with F-Droid's key regardless of any of
 this.
+
+**Updating from a build before 2026-09-21:** older APKs were signed with
+whatever machine happened to build them — GitHub Actions' auto-generated
+debug key, different on every CI run — so installing a current build over one
+of those will fail with a signing-certificate mismatch. Uninstall the old one
+first; every build from now on shares the fixed key above, so this is a
+one-time fix.
 
 ## Building
 
