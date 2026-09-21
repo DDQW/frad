@@ -37,6 +37,13 @@
 
     <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
 
+    <!-- In-app voice-message recording (attach audio in chat). Camera photo/video capture is
+         delegated to the device's own camera app via implicit intent instead (see RadarScreen's
+         attach menu), so it needs no CAMERA permission of its own here. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <!-- Wide-range discovery/chat/file-transfer (M4) - the go-libp2p layer. M1-M3 needed no
          internet access at all; this is the first FRAD feature that does. -->
     <uses-permission android:name="android.permission.INTERNET" />

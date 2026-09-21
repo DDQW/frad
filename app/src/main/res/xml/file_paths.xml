@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Exposes only me.woelki.frad.data.MediaFileStore's directory via FileProvider,
-     for the "Open" action on a received Wi-Fi Direct file (M3) - nothing else in the app's
+     for the "Open" action on a received Wi-Fi Direct file (M3), plus a cache-only "captures"
+     directory (me.woelki.frad.media.CaptureFiles) for the camera app / in-app audio recorder to
+     write a photo, video or voice message into before it's attached - nothing else in the app's
      private storage is reachable through this. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <files-path name="wfd_media" path="wfd_media/" />
+    <cache-path name="captures" path="captures/" />
 </paths>

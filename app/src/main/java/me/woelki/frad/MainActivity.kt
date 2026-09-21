@@ -5,11 +5,11 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import me.woelki.frad.ui.ChatViewModel
 import me.woelki.frad.ui.RadarScreen
+import me.woelki.frad.ui.theme.FradTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel: ChatViewModel by viewModels()
@@ -46,12 +47,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         permissionsGranted = requiredPermissions.all {
             androidx.core.content.ContextCompat.checkSelfPermission(this, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
         }
 
         setContent {
-            MaterialTheme {
+            FradTheme {
                 Surface(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
                     RadarScreen(
                         viewModel = viewModel,

@@ -53,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 21
-        versionName = "0.3.17"
+        versionCode = 22
+        versionName = "0.3.18"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -134,6 +134,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // -extended rather than -core: the UI uses a fair number of distinct icons (Block,
+    // PersonAdd, MyLocation, LockOpen, ...) that aren't all in the small curated -core set.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("androidx.core:core-ktx:1.13.1")
