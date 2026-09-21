@@ -13,6 +13,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
+import android.util.Log
 import java.util.ArrayDeque
 
 /**
@@ -43,6 +44,14 @@ class BleCentralClient(
         val reassembler = FrameReassembler()
         val pendingWrites: ArrayDeque<ByteArray> = ArrayDeque()
         var writeInFlight = false
+        // Deliberately never negotiated up via requestMtu(): a GATT connection only allows one
+        // operation in flight at a time, and MTU negotiation's own callback (onMtuChanged) is a
+        // well-known flaky spot that doesn't reliably fire on every device/OEM. There is no gap
+        // in this connection's setup sequence where issuing it wouldn't risk delaying or
+        // silently dropping whatever GATT operation comes right after it - which, unlike MTU
+        // negotiation itself, is never optional (service discovery, the descriptor write, every
+        // handshake/chat fragment write). This legacy size is small enough to always be safe
+        // without negotiation, at the cost of needing more fragments for larger messages.
         var fragmentSize = GattProfile.LEGACY_FRAGMENT_SIZE
         var inbox: BluetoothGattCharacteristic? = null
     }
@@ -59,6 +68,7 @@ class BleCentralClient(
     }
 
     fun connect(deviceAddress: String) {
+        Log.d(TAG, "connect() -> $deviceAddress")
         val device = adapter?.getRemoteDevice(deviceAddress) ?: return
         device.connectGatt(context, false, gattCallback)
     }
@@ -96,15 +106,15 @@ class BleCentralClient(
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            Log.d(TAG, "onConnectionStateChange addr=${gatt.device.address} status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connections[gatt.device.address] = DeviceConnection(gatt)
-                    // discoverServices() has to wait for this MTU request's own callback (see
-                    // onMtuChanged) rather than firing right away - issuing it while the MTU
-                    // request is still in flight is the same "only one GATT op at a time"
-                    // hazard as the descriptor-write comment below, and could silently strand
-                    // the connection before services are ever discovered.
-                    gatt.requestMtu(GattProfile.DEFAULT_MTU)
+                    // The one GATT operation everything else here depends on, so it's issued
+                    // immediately while the queue is guaranteed idle (right after connecting) -
+                    // see onServicesDiscovered for why MTU negotiation deliberately isn't in
+                    // this critical path at all any more.
+                    gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connections.remove(gatt.device.address)
@@ -114,22 +124,12 @@ class BleCentralClient(
             }
         }
 
-        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            val connection = connections[gatt.device.address] ?: return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                connection.fragmentSize = mtu - GattProfile.ATT_HEADER_SIZE
-            }
-            // A failed MTU negotiation isn't fatal (fragmentSize just stays at the legacy
-            // default), but this is the earliest point it's safe to issue the next GATT
-            // operation - see the comment on requestMtu above.
-            gatt.discoverServices()
-        }
-
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             val connection = connections[gatt.device.address] ?: return
             val service = if (status == BluetoothGatt.GATT_SUCCESS) gatt.getService(GattProfile.SERVICE_UUID) else null
             val outbox = service?.getCharacteristic(GattProfile.OUTBOX_CHARACTERISTIC_UUID)
             val inbox = service?.getCharacteristic(GattProfile.INBOX_CHARACTERISTIC_UUID)
+            Log.d(TAG, "onServicesDiscovered addr=${gatt.device.address} status=$status service=${service != null} inbox=${inbox != null} outbox=${outbox != null}")
             if (service == null || outbox == null || inbox == null) {
                 // Service discovery failed, or this peer's GATT server doesn't actually expose
                 // what we expect - press on and the peer would just sit there waiting for a
@@ -160,6 +160,7 @@ class BleCentralClient(
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (descriptor.uuid != GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID) return
+            Log.d(TAG, "onDescriptorWrite addr=${gatt.device.address} status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 gatt.disconnect()
                 return
@@ -171,6 +172,7 @@ class BleCentralClient(
             val connection = connections[gatt.device.address] ?: return
             connection.writeInFlight = false
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "onCharacteristicWrite FAILED addr=${gatt.device.address} status=$status")
                 // A dropped fragment would otherwise desync the peer's FrameReassembler forever
                 // (it keeps waiting for bytes that already silently failed to send) - disconnect
                 // cleanly instead of pumping the next fragment as if this one had gone through.
@@ -189,5 +191,9 @@ class BleCentralClient(
                 listener.onFrameReceived(gatt.device.address, complete)
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "BleCentralClient"
     }
 }

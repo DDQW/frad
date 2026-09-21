@@ -43,7 +43,6 @@ class BlePeripheralServer(
     private var advertiser: BluetoothLeAdvertiser? = null
 
     private val reassemblers = mutableMapOf<String, FrameReassembler>()
-    private val negotiatedMtu = mutableMapOf<String, Int>()
     private val devicesByAddress = mutableMapOf<String, BluetoothDevice>()
 
     // A GATT server connection allows only one outstanding notification at a time — sending
@@ -117,16 +116,17 @@ class BlePeripheralServer(
         gattServer?.close()
         gattServer = null
         reassemblers.clear()
-        negotiatedMtu.clear()
         devicesByAddress.clear()
         pendingNotifications.clear()
         notifyInFlight.clear()
     }
 
     fun sendFrame(deviceAddress: String, message: ByteArray) {
-        val fragmentSize = (negotiatedMtu[deviceAddress] ?: GattProfile.LEGACY_FRAGMENT_SIZE + GattProfile.ATT_HEADER_SIZE) - GattProfile.ATT_HEADER_SIZE
+        // See BleCentralClient.DeviceConnection.fragmentSize for why MTU is never negotiated up
+        // from this default - a central talking to this peripheral is always another FRAD
+        // instance, so it never requests a larger MTU either.
         val queue = pendingNotifications.getOrPut(deviceAddress) { ArrayDeque() }
-        for (fragment in FrameWriter.split(message, fragmentSize)) queue.add(fragment)
+        for (fragment in FrameWriter.split(message, GattProfile.LEGACY_FRAGMENT_SIZE)) queue.add(fragment)
         pumpNotifyQueue(deviceAddress)
     }
 
@@ -153,6 +153,7 @@ class BlePeripheralServer(
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            Log.d(TAG, "onConnectionStateChange addr=${device.address} status=$status newState=$newState")
             if (newState == BluetoothGatt.STATE_CONNECTED) {
                 devicesByAddress[device.address] = device
                 reassemblers[device.address] = FrameReassembler()
@@ -160,15 +161,10 @@ class BlePeripheralServer(
             } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
                 devicesByAddress.remove(device.address)
                 reassemblers.remove(device.address)
-                negotiatedMtu.remove(device.address)
                 pendingNotifications.remove(device.address)
                 notifyInFlight.remove(device.address)
                 listener.onCentralDisconnected(device.address)
             }
-        }
-
-        override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-            negotiatedMtu[device.address] = mtu
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
@@ -193,6 +189,7 @@ class BlePeripheralServer(
             value: ByteArray,
         ) {
             if (characteristic.uuid == GattProfile.INBOX_CHARACTERISTIC_UUID) {
+                Log.d(TAG, "onCharacteristicWriteRequest addr=${device.address} bytes=${value.size}")
                 val complete = reassemblers.getOrPut(device.address) { FrameReassembler() }.offer(value)
                 if (complete != null) {
                     listener.onFrameReceived(device.address, complete)

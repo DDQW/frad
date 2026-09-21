@@ -2,6 +2,7 @@ package me.woelki.frad.ble
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -115,7 +116,10 @@ class BleChatController(
         connectionTimeoutJob?.cancel()
         connectionTimeoutJob = scope.launch {
             delay(CONNECTION_TIMEOUT_MILLIS)
-            if (activeAddress == address) endActiveConnection("connection timed out")
+            if (activeAddress == address) {
+                Log.w(TAG, "connection timed out, addr=$address state=${_state.value}")
+                endActiveConnection("connection timed out")
+            }
         }
     }
 
@@ -164,6 +168,7 @@ class BleChatController(
         if (!cooldown.canRequest(picked.sessionId)) return
         val address = addressBySessionId[picked.sessionId] ?: return
 
+        Log.d(TAG, "requestRandomChat -> picked sessionId=${picked.sessionId} addr=$address")
         cooldown.recordRequest(picked.sessionId)
         activeAddress = address
         _state.value = ChatUiState.Connecting(picked)
@@ -319,6 +324,7 @@ class BleChatController(
         // not a second one, even though the address the remote connects in on isn't guaranteed
         // to be the exact address we originally discovered them at while scanning.
         val awaitingInboundHandshake = _state.value is ChatUiState.Connecting
+        Log.d(TAG, "onCentralConnected addr=$deviceAddress activeAddress=$activeAddress awaitingInboundHandshake=$awaitingInboundHandshake")
         if (activeAddress != null && !awaitingInboundHandshake) {
             peripheral.disconnectDevice(deviceAddress) // already busy with another chat
             return
@@ -330,6 +336,7 @@ class BleChatController(
     }
 
     override fun onCentralDisconnected(deviceAddress: String) {
+        Log.d(TAG, "onCentralDisconnected addr=$deviceAddress")
         if (deviceAddress == activeAddress) endActiveConnection("peer disconnected")
     }
 
@@ -353,6 +360,7 @@ class BleChatController(
     }
 
     override fun onConnected(deviceAddress: String) {
+        Log.d(TAG, "onConnected (outbound) addr=$deviceAddress - sending handshake message 1")
         val connection = Connection(ChatSession(isInitiator = true, identity = identity), isOutbound = true)
         connections[deviceAddress] = connection
         armConnectionTimeout(deviceAddress)
@@ -361,6 +369,7 @@ class BleChatController(
     }
 
     override fun onDisconnected(deviceAddress: String) {
+        Log.d(TAG, "onDisconnected (outbound) addr=$deviceAddress")
         if (deviceAddress == activeAddress) endActiveConnection("peer disconnected")
     }
 
@@ -368,6 +377,7 @@ class BleChatController(
 
     private fun handleFrame(deviceAddress: String, frame: ByteArray) {
         val connection = connections[deviceAddress] ?: return
+        Log.d(TAG, "handleFrame addr=$deviceAddress step=${connection.step} bytes=${frame.size}")
         when (connection.step) {
             HandshakeStep.EXPECT_MESSAGE_1 -> {
                 val message2 = connection.session.respondToHandshake(frame)
@@ -445,6 +455,7 @@ class BleChatController(
     }
 
     private companion object {
+        const val TAG = "BleChatController"
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
     }
 }

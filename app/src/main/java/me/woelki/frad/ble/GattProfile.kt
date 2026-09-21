@@ -23,7 +23,8 @@ object GattProfile {
      *  that package for why it must never be the long-term identity key. */
     const val MAX_ADVERTISED_SESSION_ID_BYTES = 8
 
-    const val DEFAULT_MTU = 517 // maximum allowed by the platform; falls back gracefully if refused
     const val ATT_HEADER_SIZE = 3
-    const val LEGACY_FRAGMENT_SIZE = 20 - ATT_HEADER_SIZE // if MTU negotiation is refused entirely
+    // MTU is never negotiated up from the default (see BleCentralClient.DeviceConnection for
+    // why) - this is the fragment size for the smallest MTU the platform guarantees.
+    const val LEGACY_FRAGMENT_SIZE = 20 - ATT_HEADER_SIZE
 }
