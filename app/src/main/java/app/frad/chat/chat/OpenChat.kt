@@ -94,6 +94,7 @@ internal class OpenChat(
         val current = state.value as? ChatUiState.Chatting ?: return
         if (current.messages.none { it.fromMe && it.id == id }) return
         state.value = current.copy(messages = current.messages.map { if (it.fromMe && it.id == id) it.copy(delivered = true) else it })
+        if (contactStore.isSaved(current.remotePeerId)) historyStore.markDelivered(current.remotePeerId, id)
     }
 
     private fun setPeerTyping(typing: Boolean) {

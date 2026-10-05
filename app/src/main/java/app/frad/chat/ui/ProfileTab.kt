@@ -58,6 +58,7 @@ import app.frad.chat.wideradius.AreaLookup
 import app.frad.chat.wideradius.Geohash
 
 private val RADIUS_PRESETS = listOf(20.0 to "Neighborhood", 75.0 to "City", 600.0 to "Region", 20_000.0 to "Worldwide")
+private val RETENTION_PRESETS = listOf(0 to "Keep", 1 to "1 day", 7 to "1 week", 30 to "1 month")
 
 @Composable
 internal fun ProfileTab(viewModel: ChatViewModel) {
@@ -74,6 +75,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     LaunchedEffect(savedNodes) { bootstrapDraft = savedNodes.joinToString("\n") }
     var relayOnly by remember { mutableStateOf(viewModel.wideRangeRelayOnly) }
     var appLock by remember { mutableStateOf(viewModel.appLock) }
+    var retentionDays by remember { mutableStateOf(viewModel.historyRetentionDays) }
     var confirmWipe by remember { mutableStateOf(false) }
     var locationDenied by remember { mutableStateOf(false) }
 
@@ -375,6 +377,24 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                     enabled = lockAvailable,
                     onCheckedChange = { appLock = it; viewModel.appLock = it },
                 )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Delete saved chats after", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Chats are only ever kept with people you saved as a contact, encrypted on this phone. " +
+                    "Older messages - and files received with them - are deleted automatically.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RETENTION_PRESETS.forEach { (days, label) ->
+                    FilterChip(
+                        selected = days == retentionDays,
+                        onClick = { retentionDays = days; viewModel.historyRetentionDays = days },
+                        label = { Text(label) },
+                    )
+                }
             }
             Spacer(Modifier.height(16.dp))
             Text("Delete all my data", fontWeight = FontWeight.SemiBold)

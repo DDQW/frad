@@ -76,6 +76,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         mediaFileStore.purgeExcept(contactStore.all().map { it.peerId }.toSet())
+        viewModelScope.launch(Dispatchers.IO) { historyStore.pruneExpired() }
         application.bindService(Intent(application, LocalBleService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
@@ -188,6 +189,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var appLock: Boolean
         get() = profile.appLock
         set(value) { profile.appLock = value }
+
+    /** See [Profile.historyRetentionDays]; applied to what's already stored right away. */
+    var historyRetentionDays: Int
+        get() = profile.historyRetentionDays
+        set(value) {
+            profile.historyRetentionDays = value
+            viewModelScope.launch(Dispatchers.IO) { historyStore.pruneExpired() }
+        }
 
     private val _pendingNodeImport = MutableStateFlow<List<String>>(emptyList())
 

@@ -68,6 +68,12 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
 
+    /** Saved chats with contacts are deleted after this many days; 0 keeps them until the
+     *  contact or the chat is deleted. See [app.frad.chat.contacts.ChatHistoryStore]. */
+    var historyRetentionDays: Int
+        get() = prefs.getInt(KEY_HISTORY_RETENTION_DAYS, 0)
+        set(value) { prefs.edit().putInt(KEY_HISTORY_RETENTION_DAYS, value.coerceAtLeast(0)).apply() }
+
     /** Whether local BLE discovery/chat should keep running in the background - via
      *  [app.frad.chat.ble.LocalBleService] as a foreground service with a persistent
      *  notification, never silently - instead of only while the app is open. Defaults to true:
@@ -130,6 +136,7 @@ class Profile(context: Context) {
         private const val KEY_ALWAYS_VISIBLE = "always_visible"
         private const val KEY_RELAY_ONLY = "wide_range_relay_only"
         private const val KEY_APP_LOCK = "app_lock"
+        private const val KEY_HISTORY_RETENTION_DAYS = "history_retention_days"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

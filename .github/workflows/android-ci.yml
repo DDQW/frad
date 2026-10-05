@@ -35,6 +35,11 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --no-daemon
 
+      # Release builds go through R8 (minify + resource shrinking); building one here catches
+      # missing keep rules / R8 errors before a release does.
+      - name: Assemble release APK (R8)
+        run: ./gradlew assembleRelease --no-daemon
+
       # Reported but not (yet) blocking: the existing code base has never been linted, so the
       # first runs establish what's there before lint is allowed to fail the build.
       - name: Android lint

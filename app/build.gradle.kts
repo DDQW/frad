@@ -53,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 35
-        versionName = "0.3.31"
+        versionCode = 36
+        versionName = "0.3.32"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -101,7 +101,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: drops unused code (most of Bouncy Castle and the Material icon set) and
+            // obfuscates the rest - a much smaller APK. Keep rules: proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Sign with the real release key once one is configured (see the
             // `hasReleaseSigningConfig` block above); otherwise fall back to the
