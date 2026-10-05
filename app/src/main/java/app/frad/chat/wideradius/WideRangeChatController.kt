@@ -222,9 +222,21 @@ class WideRangeChatController(
                 _state.value = ChatUiState.Ended("Set your area in Profile before going wide-range")
                 return@launch
             }
-            if (enabled && profile.wideRangeRelayOnly && profile.bootstrapNodes.isEmpty()) {
-                _state.value = ChatUiState.Ended("\"Hide my IP address\" needs at least one bootstrap/relay node in Profile")
-                return@launch
+            if (enabled) {
+                // The official list is fetched at most every 6 h; wait for it only when there's
+                // nothing else to start from (first use), otherwise refresh in the background.
+                if (nodeDirectory.candidates().isEmpty()) {
+                    withContext(Dispatchers.IO) { runCatching { nodeDirectory.refreshOfficialIfDue() } }
+                } else {
+                    scope.launch(Dispatchers.IO) { runCatching { nodeDirectory.refreshOfficialIfDue() } }
+                }
+                if (nodeDirectory.candidates().isEmpty()) {
+                    _state.value = ChatUiState.Ended(
+                        if (profile.usePublicNodes) "No FRAD servers known yet - add one in Profile, or open a frad://node link someone shared."
+                        else "Add at least one server in Profile, or allow public servers.",
+                    )
+                    return@launch
+                }
             }
 
             browsing = enabled
@@ -244,7 +256,7 @@ class WideRangeChatController(
                     val started = node.start(
                         WideRangeConfig(
                             identitySeed = Random.nextBytes(32),
-                            bootstrapPeers = profile.bootstrapNodes,
+                            bootstrapPeers = nodeDirectory.candidates(),
                             rendezvousTopic = ownTopic,
                             relayOnly = profile.wideRangeRelayOnly,
                         ),
@@ -681,6 +693,17 @@ class WideRangeChatController(
         }
     }
 
+    /** Where this layer's servers come from - see [NodeDirectory]. */
+    private val nodeDirectory = NodeDirectory(context, profile)
+
+    /** Chat partners swap the public servers they know (see [ChatEnvelope.Nodes]). */
+    private fun shareNodes(link: Link) {
+        scope.launch {
+            val nodes = nodeDirectory.publicForSharing()
+            if (nodes.isNotEmpty() && link.chat.isReady) runCatching { link.chat.send(ChatEnvelope.Nodes(nodes)) }
+        }
+    }
+
     // ---- read loop (the wide-range analogue of BLE's GATT callbacks) ----
 
     private fun startReadLoop(link: Link) {
@@ -727,6 +750,7 @@ class WideRangeChatController(
                     is ChatEvent.Ready -> {
                         disarmHandshakeTimeout()
                         openChat.start(event.peer, identity.publicKey)
+                        shareNodes(link)
                     }
                     is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
                         null -> Unit
@@ -744,6 +768,7 @@ class WideRangeChatController(
                                 Log.w(TAG, "ignoring file offer nobody accepted")
                             }
                         }
+                        is ChatEnvelope.Nodes -> nodeDirectory.addLearned(envelope.addresses)
                         else -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
                     }
                 }

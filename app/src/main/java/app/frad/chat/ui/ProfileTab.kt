@@ -85,6 +85,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var bootstrapDraft by remember { mutableStateOf(savedNodes.joinToString("\n")) }
     LaunchedEffect(savedNodes) { bootstrapDraft = savedNodes.joinToString("\n") }
     var relayOnly by remember { mutableStateOf(viewModel.wideRangeRelayOnly) }
+    var usePublicNodes by remember { mutableStateOf(viewModel.usePublicNodes) }
     var appLock by remember { mutableStateOf(viewModel.appLock) }
     var retentionDays by remember { mutableStateOf(viewModel.historyRetentionDays) }
     var confirmWipe by remember { mutableStateOf(false) }
@@ -342,10 +343,23 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             }
 
             Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Use public servers", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "FRAD's public server list (kept up to date by a crawler, fetched from two mirrors) " +
+                            "and servers learned from other servers and phones. Phones swap these public " +
+                            "servers in every chat - never the ones you add below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = usePublicNodes, onCheckedChange = { usePublicNodes = it; viewModel.usePublicNodes = it })
+            }
+            Spacer(Modifier.height(12.dp))
             Text(
-                "Bootstrap/relay nodes, one multiaddr per line - empty by default, since no single " +
-                    "party runs one for everyone (see p2p-go/README.md). Wide-range discovery can't " +
-                    "find anyone until at least one is set here.",
+                "Your own servers (bootstrap/relay nodes), one multiaddr per line - optional, tried " +
+                    "first. Anyone can run one (see p2p-go/README.md).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

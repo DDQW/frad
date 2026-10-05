@@ -42,6 +42,7 @@ import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.crypto.TransferCipher
 import app.frad.chat.media.FileTypeCheck
+import app.frad.chat.wideradius.NodeDirectory
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
@@ -704,6 +705,18 @@ class BleChatController(
         }
     }
 
+    /** Phones swap the public servers they know in every chat (see [NodeDirectory]), so server
+     *  lists spread from phone to phone - even ones that never reach the internet themselves
+     *  carry them on to those that do. */
+    private val nodeDirectory = NodeDirectory(context, profile)
+
+    private fun shareNodes(link: Link) {
+        scope.launch {
+            val nodes = nodeDirectory.publicForSharing()
+            if (nodes.isNotEmpty() && link.chat.isReady) runCatching { link.chat.send(ChatEnvelope.Nodes(nodes)) }
+        }
+    }
+
     // ---- shared frame routing ----
 
     /** Every frame comes from a peer that may be buggy or hostile - a truncated handshake message,
@@ -731,10 +744,12 @@ class BleChatController(
                 }
                 disarmConnectionTimeout()
                 openChat.start(event.peer, identity.publicKey)
+                shareNodes(link)
             }
             is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
                 null -> Unit
                 is ChatEnvelope.WfdOffer -> receiveFile(link, envelope)
+                is ChatEnvelope.Nodes -> nodeDirectory.addLearned(envelope.addresses)
                 else -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
             }
         }

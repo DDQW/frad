@@ -53,6 +53,13 @@ class Profile(context: Context) {
         get() = prefs.getString(KEY_BOOTSTRAP_NODES, null)?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         set(value) { prefs.edit().putString(KEY_BOOTSTRAP_NODES, value.joinToString("\n")).apply() }
 
+    /** Wide-range: besides the servers set here, also use the public ones - FRAD's official list
+     *  and servers learned from other servers and phones (see wideradius/NodeDirectory). On by
+     *  default, so wide-range works without anyone having to find a server first. */
+    var usePublicNodes: Boolean
+        get() = prefs.getBoolean(KEY_USE_PUBLIC_NODES, true)
+        set(value) { prefs.edit().putBoolean(KEY_USE_PUBLIC_NODES, value).apply() }
+
     /** Wide-range only: route every connection through the configured bootstrap/relay nodes,
      *  so chat partners and other DHT participants never learn this device's IP address -
      *  which would otherwise pin it down far more precisely than the shared geohash cell does.
@@ -159,6 +166,7 @@ class Profile(context: Context) {
         private const val KEY_VISIBLE_UNTIL = "visible_until"
         private const val KEY_INTERESTS = "interests"
         private const val KEY_PHOTO_ON_REQUEST = "photo_on_request"
+        private const val KEY_USE_PUBLIC_NODES = "use_public_nodes"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

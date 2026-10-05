@@ -251,13 +251,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** What wide-range still needs before it can find anyone, as a hint for the user - null
      *  once an area and at least one bootstrap/relay node are set. */
-    fun wideRangeSetupMissing(): String? = when {
-        profile.coarseGeohash == null && profile.bootstrapNodes.isEmpty() ->
-            "Set your area and at least one server (Profile → Wide-range) first."
-        profile.coarseGeohash == null -> "Set your area (Profile → Wide-range) first."
-        profile.bootstrapNodes.isEmpty() -> "Add at least one server (Profile → Wide-range) first - or open a frad://node link someone shared."
-        else -> null
+    fun wideRangeSetupMissing(): String? {
+        // With public servers allowed, the official list is fetched when wide-range starts.
+        val noServers = !profile.usePublicNodes && profile.bootstrapNodes.isEmpty()
+        return when {
+            profile.coarseGeohash == null && noServers -> "Set your area and at least one server (Profile → Wide-range) first."
+            profile.coarseGeohash == null -> "Set your area (Profile → Wide-range) first."
+            noServers -> "Add at least one server (Profile → Wide-range), or allow public servers."
+            else -> null
+        }
     }
+
+    var usePublicNodes: Boolean
+        get() = profile.usePublicNodes
+        set(value) { profile.usePublicNodes = value }
 
     var photoOnRequest: Boolean
         get() = profile.photoOnRequest

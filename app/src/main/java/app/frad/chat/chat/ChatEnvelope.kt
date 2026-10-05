@@ -51,6 +51,10 @@ sealed interface ChatEnvelope {
      *  base64 thumbnail, null for "no thanks". */
     data class PhotoReply(val photo: String?) : ChatEnvelope
 
+    /** Public FRAD servers the sender knows (see wideradius/NodeDirectory) - phones swap these
+     *  in every chat, so server lists spread without any central place. */
+    data class Nodes(val addresses: List<String>) : ChatEnvelope
+
     /** A kind this version doesn't know. Ignored rather than treated as an error, so a newer
      *  peer adding a message type (typing indicator, receipts, ...) doesn't break older ones. */
     data class Unknown(val kind: String) : ChatEnvelope
@@ -67,6 +71,9 @@ object ChatEnvelopeJson {
     private const val KIND_FILE_REPLY = "file-reply"
     private const val KIND_PHOTO_REQUEST = "photo-req"
     private const val KIND_PHOTO_REPLY = "photo"
+    private const val KIND_NODES = "nodes"
+    private const val MAX_NODES_PER_ENVELOPE = 32
+    private const val MAX_NODE_ADDRESS_CHARS = 300
 
     fun encode(envelope: ChatEnvelope): String = when (envelope) {
         is ChatEnvelope.Text -> JSONObject().put("k", KIND_TEXT).put("t", envelope.text).also { obj -> envelope.id?.let { obj.put("id", it) } }
@@ -80,6 +87,7 @@ object ChatEnvelopeJson {
         is ChatEnvelope.FileReply -> JSONObject().put("k", KIND_FILE_REPLY).put("tid", envelope.transferId).put("ok", envelope.accepted)
         ChatEnvelope.PhotoRequest -> JSONObject().put("k", KIND_PHOTO_REQUEST)
         is ChatEnvelope.PhotoReply -> JSONObject().put("k", KIND_PHOTO_REPLY).also { obj -> envelope.photo?.let { obj.put("p", it) } }
+        is ChatEnvelope.Nodes -> JSONObject().put("k", KIND_NODES).put("a", org.json.JSONArray(envelope.addresses.take(MAX_NODES_PER_ENVELOPE)))
         is ChatEnvelope.Unknown -> JSONObject().put("k", envelope.kind)
     }.toString()
 
@@ -103,6 +111,14 @@ object ChatEnvelopeJson {
                 require(transferId.length in 1..MAX_TRANSFER_ID_CHARS) { "Invalid transfer id length ${transferId.length}" }
                 ChatEnvelope.FileReply(transferId, obj.getBoolean("ok"))
             }.getOrElse { ChatEnvelope.Unknown(kind) }
+            KIND_NODES -> {
+                // Only shape-checked here; NodeDirectory/the Go side validate each address again.
+                val array = obj.optJSONArray("a")
+                val addresses = if (array == null) emptyList() else (0 until minOf(array.length(), MAX_NODES_PER_ENVELOPE))
+                    .mapNotNull { array.opt(it) as? String }
+                    .filter { it.length <= MAX_NODE_ADDRESS_CHARS }
+                ChatEnvelope.Nodes(addresses)
+            }
             KIND_PHOTO_REQUEST -> ChatEnvelope.PhotoRequest
             KIND_PHOTO_REPLY -> ChatEnvelope.PhotoReply(obj.optString("p", "").ifEmpty { null })
             else -> ChatEnvelope.Unknown(kind)

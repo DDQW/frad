@@ -27,6 +27,8 @@ class ChatEnvelopeJsonTest {
             ChatEnvelope.PhotoRequest,
             ChatEnvelope.PhotoReply("AAEC"),
             ChatEnvelope.PhotoReply(null),
+            ChatEnvelope.Nodes(listOf("/dns4/frad.example.org/tcp/4001/p2p/12D3KooWQ8NpMrbwJ6xCmPgzLaPsYHAtpALwTRY4fxFdDZtYLR9N")),
+            ChatEnvelope.Nodes(emptyList()),
         )
         for (envelope in envelopes) assertEquals(envelope, roundTrip(envelope))
     }
