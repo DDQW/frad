@@ -55,6 +55,8 @@ fun RadarScreen(
     viewModel: ChatViewModel,
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
+    /** The permission dialog won't show again - [onRequestPermissions] opens the settings page. */
+    permissionsBlocked: Boolean = false,
 ) {
     val onboarded by viewModel.onboarded.collectAsState()
     if (!onboarded) {
@@ -63,7 +65,7 @@ fun RadarScreen(
     }
     NodeImportDialog(viewModel)
     if (!permissionsGranted) {
-        PermissionGate(onRequestPermissions)
+        PermissionGate(onRequestPermissions, permissionsBlocked)
         return
     }
 
@@ -114,7 +116,7 @@ fun RadarScreen(
 }
 
 @Composable
-private fun PermissionGate(onRequestPermissions: () -> Unit) {
+private fun PermissionGate(onRequestPermissions: () -> Unit, blocked: Boolean) {
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
@@ -134,8 +136,16 @@ private fun PermissionGate(onRequestPermissions: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (blocked) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Android won't ask again - allow FRAD's permissions on its settings page.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onRequestPermissions) { Text("Grant permissions") }
+            Button(onClick = onRequestPermissions) { Text(if (blocked) "Open settings" else "Grant permissions") }
         }
     }
 }

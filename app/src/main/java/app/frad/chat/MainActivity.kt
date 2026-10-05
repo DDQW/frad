@@ -64,9 +64,21 @@ class MainActivity : ComponentActivity() {
             return ble + wifiDirect
         }
 
+    /** Android stops showing the permission dialog after it was denied twice (or with "don't
+     *  ask again") - then only the app's system settings page can grant it. */
+    private var permissionsBlocked by mutableStateOf(false)
+
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         permissionsGranted = grants.values.all { it }
-        if (permissionsGranted) onCorePermissionsGranted()
+        if (permissionsGranted) {
+            onCorePermissionsGranted()
+        } else {
+            permissionsBlocked = grants.filterValues { !it }.keys.none { shouldShowRequestPermissionRationale(it) }
+        }
+    }
+
+    private fun openAppSettings() {
+        startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", packageName, null)))
     }
 
     // Separate from requiredPermissions/permissionsGranted: this one only gates whether
@@ -99,7 +111,10 @@ class MainActivity : ComponentActivity() {
                         RadarScreen(
                             viewModel = viewModel,
                             permissionsGranted = permissionsGranted,
-                            onRequestPermissions = { permissionLauncher.launch(requiredPermissions) },
+                            onRequestPermissions = {
+                                if (permissionsBlocked) openAppSettings() else permissionLauncher.launch(requiredPermissions)
+                            },
+                            permissionsBlocked = permissionsBlocked,
                         )
                     }
                 }
@@ -133,6 +148,12 @@ class MainActivity : ComponentActivity() {
             unlock()
         }
         viewModel.setUiVisible(true)
+        // Back from the system settings page, perhaps with the permissions granted there.
+        if (!permissionsGranted && requiredPermissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
+            permissionsGranted = true
+            permissionsBlocked = false
+            onCorePermissionsGranted()
+        }
     }
 
     override fun onStop() {

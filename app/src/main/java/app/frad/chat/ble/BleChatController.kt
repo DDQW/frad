@@ -246,7 +246,8 @@ class BleChatController(
             deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
             localIsAdult = profile.isAdult,
             localProfile = { ProfileEnvelope.encode(context, profile) },
-            isBlocked = { blockList.isBlocked(it) },
+            // Also refuses whoever we just finished chatting with, on both sides - see Cooldown.justChatted.
+            isBlocked = { blockList.isBlocked(it) || cooldown.justChatted(it) },
         )
         return Link(address, isOutbound, chat).also { links[address] = it }
     }
@@ -545,6 +546,7 @@ class BleChatController(
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
         transferJob?.let { job -> transferEnded(job); job.cancel() }
+        activeLink()?.chat?.remotePeer?.peerId?.let(cooldown::recordChatEnded)
         openChat.end()
         forgetMediaUnlessSaved(activeLink()?.chat?.remotePeer?.peerId)
         disarmConnectionTimeout()

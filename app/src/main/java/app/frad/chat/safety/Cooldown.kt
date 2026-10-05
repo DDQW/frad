@@ -31,6 +31,23 @@ class Cooldown(
         return lastRequestAtMillis.filterValues { it > cutoff }.keys
     }
 
+    /** Identities (long-term peer ids) of people a chat with just ended - see [justChatted]. */
+    private val endedAtMillisByIdentity = mutableMapOf<String, Long>()
+
+    /** Call when a chat with [peerId] ends. Session ids rotate, so the same person soon shows up
+     *  under a new one; their identity, known once the handshake is done, doesn't change. */
+    fun recordChatEnded(peerId: String) {
+        endedAtMillisByIdentity[peerId] = now()
+    }
+
+    /** Whether a chat with [peerId] ended less than the interval ago - a new connection with them,
+     *  either way round, is refused until then, however their session id looks now. */
+    fun justChatted(peerId: String): Boolean {
+        val cutoff = now() - minIntervalMillis
+        endedAtMillisByIdentity.values.removeAll { it <= cutoff }
+        return peerId in endedAtMillisByIdentity
+    }
+
     companion object {
         const val DEFAULT_MIN_INTERVAL_MILLIS = 30_000L
     }

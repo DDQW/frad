@@ -242,6 +242,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _bootstrapNodes.value = profile.bootstrapNodes
         }
 
+    /** What wide-range still needs before it can find anyone, as a hint for the user - null
+     *  once an area and at least one bootstrap/relay node are set. */
+    fun wideRangeSetupMissing(): String? = when {
+        profile.coarseGeohash == null && profile.bootstrapNodes.isEmpty() ->
+            "Set your area and at least one server (Profile → Wide-range) first."
+        profile.coarseGeohash == null -> "Set your area (Profile → Wide-range) first."
+        profile.bootstrapNodes.isEmpty() -> "Add at least one server (Profile → Wide-range) first - or open a frad://node link someone shared."
+        else -> null
+    }
+
     var wideRangeRelayOnly: Boolean
         get() = profile.wideRangeRelayOnly
         set(value) { profile.wideRangeRelayOnly = value }

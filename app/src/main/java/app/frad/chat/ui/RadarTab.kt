@@ -110,6 +110,7 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
             IdleContent(
                 mode = mode,
                 wideRangeAvailable = viewModel.wideRangeAvailable,
+                wideRangeMissing = viewModel.wideRangeSetupMissing(),
                 onModeChange = { viewModel.setMode(it) },
                 onStart = { viewModel.setBrowsing(true) },
             )
@@ -210,14 +211,19 @@ private fun PausedContent(reason: String, onStop: () -> Unit) {
             ) { Text("Turn on Bluetooth") }
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onStop) { Text("Stop being visible") }
-            Spacer(Modifier.height(16.dp))
-            VisibilityLimit(visibleUntilMillis, onVisibleFor)
         }
     }
 }
 
 @Composable
-private fun IdleContent(mode: ChatMode, wideRangeAvailable: Boolean, onModeChange: (ChatMode) -> Unit, onStart: () -> Unit) {
+private fun IdleContent(
+    mode: ChatMode,
+    wideRangeAvailable: Boolean,
+    /** What wide-range still needs before it can find anyone (null: ready). */
+    wideRangeMissing: String?,
+    onModeChange: (ChatMode) -> Unit,
+    onStart: () -> Unit,
+) {
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             Icon(
@@ -253,14 +259,15 @@ private fun IdleContent(mode: ChatMode, wideRangeAvailable: Boolean, onModeChang
                 )
             }
             Spacer(Modifier.height(20.dp))
+            val missing = wideRangeMissing.takeIf { mode == ChatMode.WIDE_RANGE }
             Text(
-                if (mode == ChatMode.LOCAL_BLE) "You're not visible to anyone right now."
-                else "You're not visible to anyone right now. Set your area in Profile first if you haven't.",
+                missing ?: "You're not visible to anyone right now.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (missing != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onStart, modifier = Modifier.fillMaxWidth(0.8f)) { Text("Become visible") }
+            Button(onClick = onStart, enabled = missing == null, modifier = Modifier.fillMaxWidth(0.8f)) { Text("Become visible") }
         }
     }
 }

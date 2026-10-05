@@ -42,4 +42,17 @@ class CooldownTest {
         assertTrue(cooldown.canRequest("peer-b"))
         assertFalse(cooldown.canRequest("peer-a"))
     }
+
+    @Test
+    fun `someone just chatted with is refused until the interval has passed`() {
+        var clock = 0L
+        val cooldown = Cooldown(minIntervalMillis = 1000, now = { clock })
+
+        cooldown.recordChatEnded("identity-a")
+        clock = 500
+        assertTrue(cooldown.justChatted("identity-a"))
+        assertFalse(cooldown.justChatted("identity-b"))
+        clock = 1500
+        assertFalse(cooldown.justChatted("identity-a"))
+    }
 }
