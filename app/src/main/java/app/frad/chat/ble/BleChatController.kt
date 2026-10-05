@@ -112,6 +112,9 @@ class BleChatController(
      *  back to browsing instead of hanging forever and forcing the user to restart the app. */
     private var connectionTimeoutJob: Job? = null
 
+    /** Runs while browsing: see [forgetStalePeers]. */
+    private var stalePeerJob: Job? = null
+
     private fun newLink(address: String, isOutbound: Boolean): Link {
         val transport = object : FrameTransport {
             override suspend fun send(frame: ByteArray) {
@@ -166,7 +169,15 @@ class BleChatController(
                 startAdvertisingSession()
                 central.startScanning()
                 _state.value = ChatUiState.Browsing(emptyList())
+                stalePeerJob = scope.launch {
+                    while (true) {
+                        delay(STALE_PEER_CHECK_MILLIS)
+                        forgetStalePeers()
+                    }
+                }
             } else {
+                stalePeerJob?.cancel()
+                stalePeerJob = null
                 central.stopScanning()
                 peripheral.stop()
                 endActive("stopped browsing")
@@ -206,6 +217,22 @@ class BleChatController(
             central.stopScanning() // one conversation at a time
             peripheral.stop()
             central.connect(address)
+        }
+    }
+
+    /** A scan only ever reports who's advertising, never who stopped: drop peers not heard from
+     *  for a while (walked away, went invisible, started a chat elsewhere), so the count shown and
+     *  [requestRandomChat]'s pick stay current. */
+    private fun forgetStalePeers() {
+        val cutoff = System.currentTimeMillis() - PEER_TTL_MILLIS
+        val stale = discoveredBySessionId.filterValues { it.lastSeenAtMillis < cutoff }.keys
+        if (stale.isEmpty()) return
+        stale.forEach {
+            discoveredBySessionId.remove(it)
+            addressBySessionId.remove(it)
+        }
+        if (_state.value is ChatUiState.Browsing) {
+            _state.value = ChatUiState.Browsing(discoveredBySessionId.values.toList())
         }
     }
 
@@ -471,6 +498,8 @@ class BleChatController(
     private companion object {
         const val TAG = "BleChatController"
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
+        const val STALE_PEER_CHECK_MILLIS = 10_000L
+        const val PEER_TTL_MILLIS = 30_000L
         const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }
 }

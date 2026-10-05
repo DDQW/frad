@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import app.frad.chat.ble.FrameTooLargeException
 import app.frad.chat.ble.FrameWriter
 import app.frad.chat.ble.MAX_FRAME_BYTES
@@ -35,6 +36,7 @@ import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
+import app.frad.chat.crypto.ProofOfWork
 import app.frad.chat.crypto.TransferCipher
 import app.frad.chat.crypto.readChunked
 import app.frad.chat.crypto.writeChunked
@@ -103,6 +105,16 @@ class WideRangeChatController(
         var pendingIncomingOffer: FileOffer? = null
     }
 
+    /** Incoming chat requests still waiting for their [ProofOfWork] - checked outside the
+     *  single chat slot, so requests that never prove their work can't occupy it. */
+    private var pendingIncomingChecks = 0
+
+    /** Recently accepted proof-of-work tokens, so one solved token can't be replayed for a
+     *  burst of requests within its validity window. */
+    private val seenProofOfWork = object : LinkedHashMap<String, Unit>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?) = size > SEEN_PROOF_OF_WORK_CAPACITY
+    }
+
     private val discoveredByPeerId = mutableMapOf<String, NearbyPeer>()
     private var activeLink: Link? = null
     private var browsing = false
@@ -134,7 +146,7 @@ class WideRangeChatController(
     private fun newLink(stream: WideRangeByteStream, isInitiator: Boolean): Link {
         val transport = object : FrameTransport {
             override suspend fun send(frame: ByteArray) {
-                stream.write(FrameWriter.split(frame, maxFragmentSize = frame.size + 4).single()).getOrThrow()
+                stream.write(lengthPrefixed(frame)).getOrThrow()
             }
 
             override fun close() = stream.close()
@@ -150,10 +162,15 @@ class WideRangeChatController(
         return Link(stream, chat)
     }
 
-    private fun rendezvousTopic(): String {
+    /** Our own cell's rendezvous topic first, then its (up to) 8 neighbours'. Advertising in all
+     *  of them while searching only our own means two people on either side of a cell border
+     *  still find each other - the neighbour's search hits our advertisement in its cell - at the
+     *  cost of a few more provider records rather than nine lookups every [FIND_PEERS_INTERVAL_MILLIS]. */
+    private fun rendezvousTopics(): List<String> {
         val geohash = profile.coarseGeohash ?: error("No coarse location set")
         val precision = Geohash.precisionForRadiusKm(profile.searchRadiusKm).coerceAtMost(geohash.length)
-        return "frad/wideradius/v1/" + geohash.take(precision)
+        val cell = geohash.take(precision)
+        return (listOf(cell) + Geohash.neighbors(cell)).map { "frad/wideradius/v1/$it" }
     }
 
     override fun setBrowsing(enabled: Boolean) {
@@ -167,17 +184,23 @@ class WideRangeChatController(
                 _state.value = ChatUiState.Ended("Set your area in Profile before going wide-range")
                 return@launch
             }
+            if (enabled && profile.wideRangeRelayOnly && profile.bootstrapNodes.isEmpty()) {
+                _state.value = ChatUiState.Ended("\"Hide my IP address\" needs at least one bootstrap/relay node in Profile")
+                return@launch
+            }
 
             browsing = enabled
             if (enabled) {
                 discoveredByPeerId.clear()
                 _state.value = ChatUiState.Browsing(emptyList())
-                val topic = rendezvousTopic()
+                val topics = rendezvousTopics()
+                val ownTopic = topics.first()
                 val started = node.start(
                     WideRangeConfig(
                         identitySeed = Random.nextBytes(32),
                         bootstrapPeers = profile.bootstrapNodes,
-                        rendezvousTopic = topic,
+                        rendezvousTopic = ownTopic,
+                        relayOnly = profile.wideRangeRelayOnly,
                     ),
                 )
                 if (started.isFailure) {
@@ -190,8 +213,8 @@ class WideRangeChatController(
                     node.stop()
                     return@launch
                 }
-                node.startAdvertising(topic)
-                startDiscoveryCollectors(topic)
+                topics.forEach { node.startAdvertising(it) }
+                startDiscoveryCollectors(ownTopic)
             } else {
                 discoveryJob?.cancel(); discoveryJob = null
                 incomingStreamJob?.cancel(); incomingStreamJob = null
@@ -216,6 +239,7 @@ class WideRangeChatController(
             while (isActive) {
                 node.findPeersOnce(topic)
                 delay(FIND_PEERS_INTERVAL_MILLIS)
+                forgetStalePeers()
             }
         }
     }
@@ -231,6 +255,15 @@ class WideRangeChatController(
         }
     }
 
+    /** A lookup only ever reports who's there, never who left: drop peers no lookup has
+     *  reported for a while, so the count shown and [requestRandomChat]'s pick stay current. */
+    private fun forgetStalePeers() {
+        val cutoff = System.currentTimeMillis() - PEER_TTL_MILLIS
+        if (discoveredByPeerId.values.removeAll { it.lastSeenAtMillis < cutoff } && _state.value is ChatUiState.Browsing) {
+            _state.value = ChatUiState.Browsing(discoveredByPeerId.values.toList())
+        }
+    }
+
     override fun requestRandomChat() {
         scope.launch {
             if (_state.value !is ChatUiState.Browsing) return@launch
@@ -241,6 +274,10 @@ class WideRangeChatController(
             val connecting = ChatUiState.Connecting(picked)
             _state.value = connecting
             armHandshakeTimeout { _state.value === connecting }
+            val proofOfWork = withContext(Dispatchers.Default) {
+                ProofOfWork.solve(responderId = picked.sessionId, initiatorId = node.localPeerId, nowSeconds = nowSeconds())
+            }
+            if (_state.value !== connecting) return@launch
             val stream = node.openStream(picked.sessionId, CHAT_PROTOCOL_ID).getOrElse {
                 if (_state.value === connecting) endActive("couldn't reach that peer")
                 return@launch
@@ -256,6 +293,8 @@ class WideRangeChatController(
             armHandshakeTimeout { activeLink === link && !link.chat.isReady }
             startReadLoop(link)
             try {
+                // The request opens with the proof of work, before the Noise handshake proper.
+                stream.write(lengthPrefixed(proofOfWork)).getOrThrow()
                 link.chat.start()
             } catch (e: CancellationException) {
                 throw e
@@ -400,15 +439,19 @@ class WideRangeChatController(
     private fun onIncomingStream(protocolId: String, stream: WideRangeByteStream) {
         when (protocolId) {
             CHAT_PROTOCOL_ID -> {
-                if (activeLink != null) {
-                    stream.close() // already busy with another chat
+                // Busy with (or setting up) another chat, or too many requests already being checked.
+                if (activeLink != null || _state.value !is ChatUiState.Browsing || pendingIncomingChecks >= MAX_PENDING_INCOMING_CHECKS) {
+                    stream.close()
                     return
                 }
-                val link = newLink(stream, isInitiator = false)
-                activeLink = link
-                _state.value = ChatUiState.Handshaking
-                armHandshakeTimeout { activeLink === link && !link.chat.isReady }
-                startReadLoop(link)
+                pendingIncomingChecks++
+                scope.launch {
+                    try {
+                        acceptIncomingChat(stream)
+                    } finally {
+                        pendingIncomingChecks--
+                    }
+                }
             }
             TRANSFER_PROTOCOL_ID -> {
                 val link = activeLink
@@ -490,6 +533,50 @@ class WideRangeChatController(
         }
     }
 
+    /** An incoming chat request must open with a valid [ProofOfWork] token within
+     *  [PROOF_OF_WORK_TIMEOUT_MILLIS]; only then does it take the chat slot, show up in the UI and
+     *  get a Noise handshake. A spammer's requests never even flash "Setting up…" on screen. */
+    private suspend fun acceptIncomingChat(stream: WideRangeByteStream) {
+        // The read itself blocks in Go and can't be cancelled - closing the stream is what ends it.
+        val watchdog = scope.launch {
+            delay(PROOF_OF_WORK_TIMEOUT_MILLIS)
+            stream.close()
+        }
+        val token = readFrame(stream).getOrNull()
+        watchdog.cancel()
+        if (token == null || !acceptProofOfWork(stream.remotePeerId, token)) {
+            stream.close()
+            return
+        }
+        if (activeLink != null || _state.value !is ChatUiState.Browsing) {
+            stream.close() // got busy meanwhile
+            return
+        }
+        val link = newLink(stream, isInitiator = false)
+        activeLink = link
+        _state.value = ChatUiState.Handshaking
+        armHandshakeTimeout { activeLink === link && !link.chat.isReady }
+        startReadLoop(link)
+    }
+
+    private fun acceptProofOfWork(initiatorId: String, token: ByteArray): Boolean {
+        if (!ProofOfWork.verify(token, responderId = node.localPeerId, initiatorId = initiatorId, nowSeconds = nowSeconds())) {
+            Log.w(TAG, "rejecting chat request without a valid proof of work")
+            return false
+        }
+        val key = initiatorId + "|" + token.joinToString("") { "%02x".format(it) }
+        if (seenProofOfWork.containsKey(key)) {
+            Log.w(TAG, "rejecting a replayed proof of work")
+            return false
+        }
+        seenProofOfWork[key] = Unit
+        return true
+    }
+
+    private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
+    private fun lengthPrefixed(bytes: ByteArray): ByteArray = FrameWriter.split(bytes, maxFragmentSize = bytes.size + 4).single()
+
     /** Fails with [FrameTooLargeException] before allocating anything if the (still
      *  unauthenticated) peer announces a length outside 0..[MAX_FRAME_BYTES]. */
     private suspend fun readFrame(stream: WideRangeByteStream): Result<ByteArray> = runCatching {
@@ -504,6 +591,10 @@ class WideRangeChatController(
         private const val TAG = "WideRangeChatController"
         private const val WIDE_TRANSFER_KEY_INFO = "frad-wide-transfer-v2"
         private const val FIND_PEERS_INTERVAL_MILLIS = 30_000L
+        private const val PEER_TTL_MILLIS = 3 * FIND_PEERS_INTERVAL_MILLIS
         private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
+        private const val SEEN_PROOF_OF_WORK_CAPACITY = 512
+        private const val PROOF_OF_WORK_TIMEOUT_MILLIS = 10_000L
+        private const val MAX_PENDING_INCOMING_CHECKS = 4
     }
 }

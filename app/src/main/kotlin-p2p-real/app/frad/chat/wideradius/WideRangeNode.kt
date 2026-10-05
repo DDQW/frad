@@ -77,6 +77,7 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
                 listenPort = config.listenPort
                 identitySeed = config.identitySeed
                 bootstrapPeers = config.bootstrapPeers.joinToString("\n")
+                relayOnly = config.relayOnly
             }
             val host = GoNode.newHost(goConfig, goPeerFoundListener, goIncomingStreamListener)
             host.start()

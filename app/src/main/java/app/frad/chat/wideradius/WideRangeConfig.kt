@@ -14,10 +14,14 @@ package app.frad.chat.wideradius
  *   [app.frad.chat.profile.Profile.bootstrapNodes]).
  * @param rendezvousTopic the geohash-derived DHT rendezvous string (see
  *   [Geohash]) both sides advertise/search for.
+ * @param relayOnly route every connection through the bootstrap/relay nodes so no
+ *   other peer ever learns this device's IP address (see
+ *   [app.frad.chat.profile.Profile.wideRangeRelayOnly]).
  */
 class WideRangeConfig(
     val identitySeed: ByteArray,
     val bootstrapPeers: List<String>,
     val rendezvousTopic: String,
     val listenPort: Int = 0,
+    val relayOnly: Boolean = false,
 )

@@ -71,6 +71,13 @@ type Config struct {
 	// list (see README "Downloads"/"Project status" for why this can't ship
 	// with real defaults baked in).
 	BootstrapPeers string
+	// RelayOnly hides this device's IP address from everyone but the
+	// bootstrap/relay nodes themselves: no listening sockets, no hole punching
+	// or UPnP, and every connection to any other peer goes through a relay
+	// circuit (see relayOnlyOptions). Needs at least one BootstrapPeers entry.
+	// Costs: everything is relayed (slower, and subject to the relay's limits),
+	// and peers that hold no relay reservation themselves can't be reached.
+	RelayOnly bool
 }
 
 // Host wraps a libp2p host + a Kademlia DHT scoped to ProtocolPrefix. Direct
@@ -109,15 +116,19 @@ func NewHost(cfg *Config, peers PeerFoundListener, streams IncomingStreamListene
 		return nil, err
 	}
 
-	listenAddrs := []string{
-		fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
-		fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", cfg.ListenPort),
+	opts := []libp2p.Option{libp2p.Identity(priv)}
+	if cfg.RelayOnly {
+		if len(relays) == 0 {
+			return nil, fmt.Errorf("relay-only mode needs at least one bootstrap/relay node")
+		}
+		opts = append(opts, relayOnlyOptions(relays)...)
+	} else {
+		opts = append(opts, libp2p.ListenAddrStrings(
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", cfg.ListenPort),
+		))
+		opts = append(opts, relayOptions(relays)...)
 	}
-
-	opts := append([]libp2p.Option{
-		libp2p.Identity(priv),
-		libp2p.ListenAddrStrings(listenAddrs...),
-	}, relayOptions(relays)...)
 
 	h, err := libp2p.New(opts...)
 	if err != nil {

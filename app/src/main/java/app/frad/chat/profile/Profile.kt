@@ -53,6 +53,15 @@ class Profile(context: Context) {
         get() = prefs.getString(KEY_BOOTSTRAP_NODES, null)?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         set(value) { prefs.edit().putString(KEY_BOOTSTRAP_NODES, value.joinToString("\n")).apply() }
 
+    /** Wide-range only: route every connection through the configured bootstrap/relay nodes,
+     *  so chat partners and other DHT participants never learn this device's IP address -
+     *  which would otherwise pin it down far more precisely than the shared geohash cell does.
+     *  Off by default: everything gets slower and depends on the relays, and peers without a
+     *  relay reservation of their own can't be reached. See p2p-go's Config.RelayOnly. */
+    var wideRangeRelayOnly: Boolean
+        get() = prefs.getBoolean(KEY_RELAY_ONLY, false)
+        set(value) { prefs.edit().putBoolean(KEY_RELAY_ONLY, value).apply() }
+
     /** Whether local BLE discovery/chat should keep running in the background - via
      *  [app.frad.chat.ble.LocalBleService] as a foreground service with a persistent
      *  notification, never silently - instead of only while the app is open. Defaults to true:
@@ -97,6 +106,7 @@ class Profile(context: Context) {
         private const val KEY_RADIUS_KM = "search_radius_km"
         private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
         private const val KEY_ALWAYS_VISIBLE = "always_visible"
+        private const val KEY_RELAY_ONLY = "wide_range_relay_only"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_BIO = "bio"

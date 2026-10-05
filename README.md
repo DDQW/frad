@@ -109,7 +109,11 @@ you have it, or ask in an issue — the summary above is the durable version.
   topic; once found, the same Noise_XX session type BLE uses drives an
   encrypted chat and, on request, a second libp2p stream for file transfer
   (25 MB cap, same as M3), with direct-vs-relayed dialing left entirely to
-  libp2p. The chat/discovery Kotlin architecture was also generalized (see
+  libp2p. Each device advertises in its own geohash cell and the 8 around it,
+  so people on either side of a cell border still find each other. An
+  optional "hide my IP address" mode routes every connection through the
+  bootstrap/relay nodes (`p2p-go`'s `Config.RelayOnly`), since a direct
+  connection would reveal the IP address - far more precise than the cell. The chat/discovery Kotlin architecture was also generalized (see
   `chat/`) so BLE and wide-range share one `ChatController` interface and UI.
   **Not yet verified**: unlike M1/M3, this isn't just a real-hardware gap —
   a wide-range DHT has no peers until something connects to a bootstrap
@@ -124,9 +128,11 @@ you have it, or ask in an issue — the summary above is the durable version.
   right after the Noise handshake, both sides also exchange a hashed, per-device fingerprint
   (`safety/DeviceFingerprint.kt`, derived from `Settings.Secure.ANDROID_ID`) and `BlockList`
   matches on either it or the long-term peer id, so someone who clears app data or reinstalls to
-  shake off a block is still caught as long as it's the same physical device. Not yet done:
-  wide-range Sybil/spam resistance (e.g. proof-of-work — see `safety/Cooldown.kt`) and
-  bootstrap/relay DoS protection.
+  shake off a block is still caught as long as it's the same physical device. Wide-range chat
+  requests must open with a small proof of work (`crypto/ProofOfWork.kt`, bound to both libp2p
+  peer ids and a timestamp, replay-checked), checked before the request touches the single chat
+  slot or the UI - so spamming everyone in an area from throwaway identities costs real CPU time
+  per request. Not yet done: bootstrap/relay DoS protection beyond libp2p's own resource limits.
 - **M6 — F-Droid release packaging**: in-repo groundwork done, submission not started. F-Droid
   builds each app from source and signs it with F-Droid's own key, so nothing here is required
   for that build itself to work — the two things this milestone actually covers are (1) making
