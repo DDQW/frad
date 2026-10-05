@@ -12,12 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -116,7 +117,7 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
             )
         }
         is ChatUiState.Browsing -> BrowsingContent(
-            peerCount = current.nearbyPeers.size,
+            peers = current.nearbyPeers,
             warning = current.warning,
             visibleUntilMillis = viewModel.visibleUntilMillis.collectAsState().value,
             onVisibleFor = viewModel::setVisibleFor,
@@ -274,21 +275,20 @@ private fun IdleContent(
 
 @Composable
 private fun BrowsingContent(
-    peerCount: Int,
+    peers: List<app.frad.chat.pairing.NearbyPeer>,
     warning: String?,
     visibleUntilMillis: Long,
     onVisibleFor: (minutes: Int?) -> Unit,
     onStop: () -> Unit,
     onRandomChat: () -> Unit,
 ) {
+    val peerCount = peers.size
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-            Icon(
-                if (peerCount == 0) Icons.Default.Search else Icons.Default.Wifi,
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+        ) {
+            RadarView(peers)
             Spacer(Modifier.height(20.dp))
             Text(
                 if (peerCount == 0) "Looking for people…" else "$peerCount people found right now",

@@ -25,3 +25,12 @@
 # Keep line numbers in crash reports readable without shipping the original file names.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# Release builds log no debug/verbose/info lines: those name Bluetooth addresses, session and
+# peer ids and the like, which a bug report or anything else reading the system log shouldn't
+# carry. Warnings and errors stay.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

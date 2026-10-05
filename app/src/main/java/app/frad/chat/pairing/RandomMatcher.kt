@@ -11,6 +11,27 @@ sealed interface SignalStrength {
 
 /** A peer currently visible over some discovery transport and opted in to receiving chat
  *  requests. [sessionId] is only unique within the transport that discovered it. */
+/**
+ * How close a discovered peer is, in three deliberately coarse bands - enough for "someone is
+ * right here" vs. "somewhere around", never a distance precise enough to walk up to a person.
+ */
+enum class ProximityBand {
+    VERY_CLOSE,
+    NEARBY,
+    FURTHER;
+
+    companion object {
+        fun of(signal: SignalStrength): ProximityBand = when (signal) {
+            is SignalStrength.Ble -> when {
+                signal.rssiDbm >= -60 -> VERY_CLOSE
+                signal.rssiDbm >= -78 -> NEARBY
+                else -> FURTHER
+            }
+            SignalStrength.Unknown -> FURTHER
+        }
+    }
+}
+
 data class NearbyPeer(
     val sessionId: String,
     val lastSeenAtMillis: Long,

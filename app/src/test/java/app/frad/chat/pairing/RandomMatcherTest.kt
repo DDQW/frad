@@ -62,4 +62,12 @@ class RandomMatcherTest {
         val seen = (1..200).mapNotNull { matcher.pickRandomPeer(candidates)?.sessionId }.toSet()
         assertTrue(seen == setOf("local", "wide"))
     }
+
+    @Test
+    fun `signal strength maps to three coarse bands`() {
+        org.junit.Assert.assertEquals(ProximityBand.VERY_CLOSE, ProximityBand.of(SignalStrength.Ble(-45)))
+        org.junit.Assert.assertEquals(ProximityBand.NEARBY, ProximityBand.of(SignalStrength.Ble(-70)))
+        org.junit.Assert.assertEquals(ProximityBand.FURTHER, ProximityBand.of(SignalStrength.Ble(-95)))
+        org.junit.Assert.assertEquals(ProximityBand.FURTHER, ProximityBand.of(SignalStrength.Unknown))
+    }
 }
