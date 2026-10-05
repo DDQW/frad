@@ -25,3 +25,10 @@ private inline fun decodeSampled(maxDimension: Int, decode: (BitmapFactory.Optio
     }
     return decode(BitmapFactory.Options().apply { inSampleSize = sampleSize })
 }
+
+/** A tiny copy of [bitmap] ([width] pixels wide) - drawn scaled up without filtering, it shows
+ *  only coarse blocks of colour. */
+internal fun pixelated(bitmap: Bitmap, width: Int = 12): Bitmap {
+    val height = (bitmap.height * width / bitmap.width.coerceAtLeast(1)).coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(bitmap, width, height, true)
+}

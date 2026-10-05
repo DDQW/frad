@@ -79,6 +79,8 @@ internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
                 alreadySaved = saved,
                 fileTransferAvailable = viewModel.fileTransferAvailable,
                 transferStatus = transferStatus,
+                incomingFile = current.incomingFile,
+                onAnswerIncomingFile = { viewModel.answerIncomingFile(it) },
                 errorMessage = errorEvent,
                 onDismissError = { viewModel.consumeErrorEvent() },
                 onSend = { viewModel.sendMessage(it) },

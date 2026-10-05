@@ -21,6 +21,9 @@ class ChatEnvelopeJsonTest {
             ChatEnvelope.Typing,
             ChatEnvelope.WfdOffer(offer, networkName = "DIRECT-ab", passphrase = "secret"),
             ChatEnvelope.WideOffer(offer),
+            ChatEnvelope.FileRequest(offer),
+            ChatEnvelope.FileReply("abc123", accepted = true),
+            ChatEnvelope.FileReply("abc123", accepted = false),
         )
         for (envelope in envelopes) assertEquals(envelope, roundTrip(envelope))
     }
@@ -70,5 +73,12 @@ class ChatEnvelopeJsonTest {
     fun `malformed json is a protocol error`() {
         assertThrows(JSONException::class.java) { ChatEnvelopeJson.decode("not json") }
         assertThrows(JSONException::class.java) { ChatEnvelopeJson.decode("""{"k":"txt"}""") }
+    }
+
+    @Test
+    fun `a malformed file reply is ignored rather than ending the chat`() {
+        assertEquals(ChatEnvelope.Unknown("file-reply"), ChatEnvelopeJson.decode("""{"k":"file-reply","tid":""}"""))
+        assertEquals(ChatEnvelope.Unknown("file-reply"), ChatEnvelopeJson.decode("""{"k":"file-reply","tid":"abc"}"""))
+        assertEquals(ChatEnvelope.Unknown("file-req"), ChatEnvelopeJson.decode("""{"k":"file-req","tid":"abc","name":"x","mime":"y","size":-1}"""))
     }
 }

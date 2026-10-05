@@ -277,6 +277,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun notifyTyping() { activeController?.notifyTyping() }
     fun endChat() { activeController?.endActiveConnection("you left") }
     fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
+    fun answerIncomingFile(accept: Boolean) { activeController?.answerIncomingFile(accept) }
     fun blockActivePeer() { activeController?.blockActivePeer() }
     fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 

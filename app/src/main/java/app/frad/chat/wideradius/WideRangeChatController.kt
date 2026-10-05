@@ -104,7 +104,7 @@ class WideRangeChatController(
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     override val notices: SharedFlow<String> = _notices.asSharedFlow()
 
-    private val openChat by lazy { OpenChat(_state, scope, contactStore, historyStore) }
+    private val openChat by lazy { OpenChat(_state, scope, contactStore, historyStore, canReceiveFile = { _transferStatus.value == null }) }
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
@@ -113,7 +113,12 @@ class WideRangeChatController(
 
     /** One chat stream and the chat running over it. */
     private class Link(val stream: WideRangeByteStream, val chat: ChatConnection) {
+        /** An accepted offer whose transfer stream hasn't arrived yet... */
         var pendingIncomingOffer: FileOffer? = null
+
+        /** ...or a transfer stream that overtook its offer (they travel separately), held briefly. */
+        var earlyTransferStream: WideRangeByteStream? = null
+        var earlyTransferStreamTimeout: Job? = null
     }
 
     /** Incoming chat requests still waiting for their [ProofOfWork] - checked outside the
@@ -396,7 +401,7 @@ class WideRangeChatController(
             if (_transferStatus.value != null) return@launch
 
             val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
-            link.chat.claimTransferId(offer.transferId)
+            if (!askToSend(link, offer)) return@launch
             val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
             _transferStatus.value = "Sending $fileName…"
             val result = runCatching {
@@ -413,6 +418,36 @@ class WideRangeChatController(
                 val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
                 openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
             }
+        }
+    }
+
+    /** Asks the peer (see [OpenChat.requestToSend]); true once they've accepted and the chat is
+     *  still the same one. Leaves [_transferStatus] set while waiting, cleared otherwise. */
+    private suspend fun askToSend(link: Link, offer: FileOffer): Boolean {
+        _transferStatus.value = "Waiting for them to accept ${offer.fileName}…"
+        val answer = try {
+            openChat.requestToSend(link.chat, offer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "file request failed", e)
+            OpenChat.FileAnswer.NO_ANSWER
+        } finally {
+            _transferStatus.value = null
+        }
+        if (activeLink !== link) return false
+        when (answer) {
+            OpenChat.FileAnswer.ACCEPTED -> return true
+            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit("${offer.fileName} wasn't sent - they declined it.")
+            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit("${offer.fileName} wasn't sent - no answer.")
+        }
+        return false
+    }
+
+    override fun answerIncomingFile(accept: Boolean) {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.answerFileRequest(link.chat, accept) }
         }
     }
 
@@ -463,6 +498,11 @@ class WideRangeChatController(
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
         openChat.end()
+        activeLink?.let { link ->
+            link.earlyTransferStreamTimeout?.cancel()
+            link.earlyTransferStream?.close()
+            link.earlyTransferStream = null
+        }
         forgetMediaUnlessSaved(activeLink?.chat?.remotePeer?.peerId)
         disarmHandshakeTimeout()
         activeLink?.chat?.close()
@@ -521,14 +561,29 @@ class WideRangeChatController(
             }
             TRANSFER_PROTOCOL_ID -> {
                 val link = activeLink
-                val offer = link?.pendingIncomingOffer
-                // Only the peer we're chatting with may deliver the file it just offered.
-                if (link == null || offer == null || stream.remotePeerId != link.stream.remotePeerId) {
+                // Only the peer we're chatting with may deliver a file, and only one it offered.
+                if (link == null || stream.remotePeerId != link.stream.remotePeerId) {
                     stream.close()
                     return
                 }
-                link.pendingIncomingOffer = null
-                receiveFile(link, stream, offer)
+                val offer = link.pendingIncomingOffer
+                if (offer != null) {
+                    link.pendingIncomingOffer = null
+                    receiveFile(link, stream, offer)
+                    return
+                }
+                if (link.earlyTransferStream != null) {
+                    stream.close()
+                    return
+                }
+                link.earlyTransferStream = stream
+                link.earlyTransferStreamTimeout = scope.launch {
+                    delay(EARLY_TRANSFER_STREAM_MILLIS)
+                    if (link.earlyTransferStream === stream) {
+                        link.earlyTransferStream = null
+                        stream.close()
+                    }
+                }
             }
             else -> stream.close()
         }
@@ -584,10 +639,17 @@ class WideRangeChatController(
                     is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
                         null -> Unit
                         is ChatEnvelope.WideOffer -> {
-                            if (link.chat.claimTransferId(envelope.offer.transferId)) {
-                                link.pendingIncomingOffer = envelope.offer
+                            // Only what the user accepted, with the metadata they saw when accepting.
+                            val accepted = openChat.takeAcceptedFile(envelope.offer.transferId)
+                            val early = link.earlyTransferStream
+                            if (accepted != null && early != null) {
+                                link.earlyTransferStream = null
+                                link.earlyTransferStreamTimeout?.cancel()
+                                receiveFile(link, early, accepted)
+                            } else if (accepted != null) {
+                                link.pendingIncomingOffer = accepted
                             } else {
-                                Log.w(TAG, "ignoring file offer reusing transfer id ${envelope.offer.transferId}")
+                                Log.w(TAG, "ignoring file offer nobody accepted")
                             }
                         }
                         else -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
@@ -657,6 +719,8 @@ class WideRangeChatController(
         private const val FIND_PEERS_INTERVAL_MILLIS = 30_000L
         private const val PEER_TTL_MILLIS = 3 * FIND_PEERS_INTERVAL_MILLIS
         private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
+        /** How long a transfer stream may wait for the offer it belongs to. */
+        private const val EARLY_TRANSFER_STREAM_MILLIS = 15_000L
         private const val SEEN_PROOF_OF_WORK_CAPACITY = 512
         private const val PROOF_OF_WORK_TIMEOUT_MILLIS = 10_000L
         private const val MAX_PENDING_INCOMING_CHECKS = 4

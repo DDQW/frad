@@ -54,6 +54,8 @@ sealed interface ChatUiState {
         /** Both sides' long-term keys as a number the two people can compare out of band to rule
          *  out a man in the middle - see [SafetyNumber]. */
         val safetyNumber: String = "",
+        /** The peer asks to send this file; nothing is transferred unless the user accepts. */
+        val incomingFile: FileOffer? = null,
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

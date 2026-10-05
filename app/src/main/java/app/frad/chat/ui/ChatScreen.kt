@@ -12,6 +12,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -39,7 +41,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Report
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
@@ -86,6 +88,7 @@ import app.frad.chat.media.AudioRecorder
 import app.frad.chat.media.CaptureFiles
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
+import app.frad.chat.chat.FileOffer
 import app.frad.chat.ui.theme.fradExtraColors
 import java.io.File
 import java.time.Instant
@@ -111,6 +114,9 @@ internal fun ChatContent(
     alreadySaved: Boolean,
     fileTransferAvailable: Boolean,
     transferStatus: String?,
+    /** The peer asks to send this; [onAnswerIncomingFile] says yes or no. */
+    incomingFile: FileOffer?,
+    onAnswerIncomingFile: (accept: Boolean) -> Unit,
     errorMessage: String?,
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
@@ -280,7 +286,8 @@ internal fun ChatContent(
         }
         HorizontalDivider()
 
-        MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth())
+        // Received pictures from someone who isn't a contact stay pixelated until tapped.
+        MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth(), veilTheirImages = !alreadySaved)
 
         if (confirmBlock) {
             AlertDialog(
@@ -313,6 +320,13 @@ internal fun ChatContent(
             )
         }
 
+        if (incomingFile != null) {
+            IncomingFileCard(
+                fromName = Profile.displayName(remotePseudonym, remotePeerId),
+                offer = incomingFile,
+                onAnswer = onAnswerIncomingFile,
+            )
+        }
         if (transferStatus != null) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Text(transferStatus, style = MaterialTheme.typography.bodySmall)
@@ -390,7 +404,7 @@ internal fun ChatContent(
                             Icon(Icons.Default.Close, contentDescription = "Cancel recording")
                         }
                         IconButton(onClick = { sendAudioRecording() }, colors = IconButtonDefaults.filledIconButtonColors()) {
-                            Icon(Icons.Default.Send, contentDescription = "Send voice message")
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice message")
                         }
                     } else {
                         // Only shown close to the limit, so it doesn't take up room the rest of the time.
@@ -425,7 +439,7 @@ internal fun ChatContent(
                             onClick = sendDraft,
                             colors = IconButtonDefaults.filledIconButtonColors(),
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = "Send")
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
                 }
@@ -446,7 +460,30 @@ internal fun ChatContent(
  *  ones as long as the user is already at the bottom (or sent the message themselves), with a
  *  date line wherever the day changes. */
 @Composable
-internal fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
+private fun IncomingFileCard(fromName: String, offer: FileOffer, onAnswer: (Boolean) -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(
+                "$fromName wants to send you ${offer.fileName} (${readableSize(offer.sizeBytes)})",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onAnswer(false) }) { Text("Decline") }
+                TextButton(onClick = { onAnswer(true) }) { Text("Accept") }
+            }
+        }
+    }
+}
+
+private fun readableSize(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> String.format(java.util.Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
+    bytes >= 1024 -> "${bytes / 1024} KB"
+    else -> "$bytes bytes"
+}
+
+/** @param veilTheirImages show pictures the other person sent pixelated until tapped. */
+@Composable
+internal fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier, veilTheirImages: Boolean = false) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val transcript = remember(messages) { withDayLines(messages) }
@@ -476,7 +513,11 @@ internal fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modif
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = if (item.message.fromMe) Arrangement.End else Arrangement.Start,
                 ) {
-                    MessageBubble(message = item.message, onOpenFile = { openFile(context, item.message) })
+                    MessageBubble(
+                        message = item.message,
+                        veiled = veilTheirImages && !item.message.fromMe,
+                        onOpenFile = { openFile(context, item.message) },
+                    )
                 }
             }
         }
@@ -540,7 +581,7 @@ private fun ReportDialog(onDismiss: () -> Unit, onReport: (String) -> Unit) {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, onOpenFile: () -> Unit) {
+private fun MessageBubble(message: ChatMessage, veiled: Boolean, onOpenFile: () -> Unit) {
     val bubbleColor = if (message.fromMe) MaterialTheme.fradExtraColors.bubbleMine else MaterialTheme.fradExtraColors.bubbleTheirs
     val shape = RoundedCornerShape(
         topStart = 16.dp,
@@ -552,7 +593,7 @@ private fun MessageBubble(message: ChatMessage, onOpenFile: () -> Unit) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             when (message.kind) {
                 MessageKind.TEXT -> Text(message.text)
-                MessageKind.FILE -> FileMessageContent(message, onOpen = onOpenFile)
+                MessageKind.FILE -> FileMessageContent(message, veiled = veiled, onOpen = onOpenFile)
             }
             Text(
                 // Delivered = the peer's phone confirmed it arrived (see ChatEnvelope.Ack).
@@ -566,22 +607,42 @@ private fun MessageBubble(message: ChatMessage, onOpenFile: () -> Unit) {
 }
 
 @Composable
-private fun FileMessageContent(message: ChatMessage, onOpen: () -> Unit) {
+private fun FileMessageContent(message: ChatMessage, veiled: Boolean, onOpen: () -> Unit) {
     val path = message.localPath ?: return
     if (message.mimeType?.startsWith("image/") == true) {
+        var revealed by remember(path) { mutableStateOf(!veiled) }
         // Up to 25 MB from a stranger: decoded subsampled to the preview size, off the main thread.
-        val bitmap = produceState<ImageBitmap?>(initialValue = null, path) {
-            value = withContext(Dispatchers.IO) { runCatching { decodeSampled(path, IMAGE_PREVIEW_MAX_PIXELS)?.asImageBitmap() }.getOrNull() }
+        // While veiled only a 12-pixel-wide copy is kept and blown up blocky - shapes and colours,
+        // nothing more, the same on every Android version (unlike a blur).
+        val bitmap = produceState<ImageBitmap?>(initialValue = null, path, revealed) {
+            value = withContext(Dispatchers.IO) {
+                runCatching {
+                    val decoded = decodeSampled(path, IMAGE_PREVIEW_MAX_PIXELS) ?: return@runCatching null
+                    (if (revealed) decoded else pixelated(decoded)).asImageBitmap()
+                }.getOrNull()
+            }
         }.value
         Column {
             Text(message.fileName ?: "Image", style = MaterialTheme.typography.bodySmall)
             if (bitmap != null) {
                 Spacer(Modifier.height(4.dp))
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = message.fileName,
-                    modifier = Modifier.size(160.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onOpen),
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = message.fileName,
+                        contentScale = ContentScale.Crop,
+                        filterQuality = if (revealed) FilterQuality.Low else FilterQuality.None,
+                        modifier = Modifier
+                            .size(160.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { if (revealed) onOpen() else revealed = true },
+                    )
+                    if (!revealed) {
+                        Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), shape = RoundedCornerShape(12.dp)) {
+                            Text("Tap to view", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                        }
+                    }
+                }
             }
         }
     } else {

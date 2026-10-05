@@ -102,7 +102,9 @@ class BleChatController(
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     override val notices: SharedFlow<String> = _notices.asSharedFlow()
 
-    private val openChat by lazy { OpenChat(_state, scope, contactStore, historyStore) }
+    private val openChat by lazy {
+        OpenChat(_state, scope, contactStore, historyStore, canReceiveFile = { transferManager != null && _transferStatus.value == null })
+    }
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
@@ -372,7 +374,7 @@ class BleChatController(
             if (_transferStatus.value != null) return@launch
 
             val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
-            link.chat.claimTransferId(offer.transferId)
+            if (!askToSend(link, offer)) return@launch
             val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
             _transferStatus.value = "Sending $fileName…"
             val result = manager.hostAndSendFile(bytes, transferKey) { credentials ->
@@ -386,15 +388,45 @@ class BleChatController(
         }
     }
 
+    /** Asks the peer (see [OpenChat.requestToSend]); true once they've accepted and the chat is
+     *  still the same one. Leaves [_transferStatus] set while waiting, cleared otherwise. */
+    private suspend fun askToSend(link: Link, offer: FileOffer): Boolean {
+        _transferStatus.value = "Waiting for them to accept ${offer.fileName}…"
+        val answer = try {
+            openChat.requestToSend(link.chat, offer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "file request failed", e)
+            OpenChat.FileAnswer.NO_ANSWER
+        } finally {
+            _transferStatus.value = null
+        }
+        if (activeLink() !== link) return false
+        when (answer) {
+            OpenChat.FileAnswer.ACCEPTED -> return true
+            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit("${offer.fileName} wasn't sent - they declined it.")
+            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit("${offer.fileName} wasn't sent - no answer.")
+        }
+        return false
+    }
+
+    override fun answerIncomingFile(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.answerFileRequest(link.chat, accept)
+        }
+    }
+
     private fun receiveFile(link: Link, envelope: ChatEnvelope.WfdOffer) {
-        val offer = envelope.offer
+        // Only what the user accepted, with the metadata they saw when accepting.
+        val offer = openChat.takeAcceptedFile(envelope.offer.transferId) ?: run {
+            Log.w(TAG, "ignoring file offer nobody accepted")
+            return
+        }
         val manager = transferManager
         val remotePeerId = link.chat.remotePeer?.peerId ?: return
         if (manager == null || _transferStatus.value != null || offer.sizeBytes > MAX_TRANSFER_FILE_BYTES) return
-        if (!link.chat.claimTransferId(offer.transferId)) {
-            Log.w(TAG, "ignoring file offer reusing transfer id ${offer.transferId}")
-            return
-        }
 
         val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
         val credentials = WfdCredentials(networkName = envelope.networkName, passphrase = envelope.passphrase)

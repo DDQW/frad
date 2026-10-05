@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material3.Card
@@ -92,7 +92,7 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
 private fun ContactHistoryContent(contact: Contact, messages: List<ChatMessage>, onBack: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
             Avatar(label = contact.alias, size = 32.dp)
             Spacer(Modifier.width(8.dp))
             Text(Profile.displayName(contact.alias, contact.peerId), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)

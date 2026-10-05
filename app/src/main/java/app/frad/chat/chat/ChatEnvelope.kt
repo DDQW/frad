@@ -29,6 +29,14 @@ sealed interface ChatEnvelope {
     /** "I'm typing" - sent at most every few seconds while the user types; shown briefly. */
     data object Typing : ChatEnvelope
 
+    /** "May I send you this file?" - nothing is transferred until the peer answers with an
+     *  accepting [FileReply]; the transport-specific offer ([WfdOffer]/[WideOffer]) for the
+     *  same transfer id follows only then. */
+    data class FileRequest(val offer: FileOffer) : ChatEnvelope
+
+    /** The answer to a [FileRequest]. */
+    data class FileReply(val transferId: String, val accepted: Boolean) : ChatEnvelope
+
     /** BLE chats: the file itself follows over a one-off Wi-Fi Direct group, whose network
      *  name/passphrase ride along here. */
     data class WfdOffer(val offer: FileOffer, val networkName: String, val passphrase: String) : ChatEnvelope
@@ -48,6 +56,8 @@ object ChatEnvelopeJson {
     private const val MAX_MESSAGE_ID_CHARS = 64
     private const val KIND_WFD_OFFER = "wfd"
     private const val KIND_WIDE_OFFER = "wide-transfer"
+    private const val KIND_FILE_REQUEST = "file-req"
+    private const val KIND_FILE_REPLY = "file-reply"
 
     fun encode(envelope: ChatEnvelope): String = when (envelope) {
         is ChatEnvelope.Text -> JSONObject().put("k", KIND_TEXT).put("t", envelope.text).also { obj -> envelope.id?.let { obj.put("id", it) } }
@@ -57,6 +67,8 @@ object ChatEnvelopeJson {
             .put("ssid", envelope.networkName)
             .put("pass", envelope.passphrase)
         is ChatEnvelope.WideOffer -> putOffer(JSONObject().put("k", KIND_WIDE_OFFER), envelope.offer)
+        is ChatEnvelope.FileRequest -> putOffer(JSONObject().put("k", KIND_FILE_REQUEST), envelope.offer)
+        is ChatEnvelope.FileReply -> JSONObject().put("k", KIND_FILE_REPLY).put("tid", envelope.transferId).put("ok", envelope.accepted)
         is ChatEnvelope.Unknown -> JSONObject().put("k", envelope.kind)
     }.toString()
 
@@ -74,6 +86,12 @@ object ChatEnvelopeJson {
                 ChatEnvelope.WfdOffer(offer = readOffer(obj), networkName = obj.getString("ssid"), passphrase = obj.getString("pass"))
             }.getOrElse { ChatEnvelope.Unknown(kind) }
             KIND_WIDE_OFFER -> runCatching { ChatEnvelope.WideOffer(readOffer(obj)) }.getOrElse { ChatEnvelope.Unknown(kind) }
+            KIND_FILE_REQUEST -> runCatching { ChatEnvelope.FileRequest(readOffer(obj)) }.getOrElse { ChatEnvelope.Unknown(kind) }
+            KIND_FILE_REPLY -> runCatching {
+                val transferId = obj.getString("tid")
+                require(transferId.length in 1..MAX_TRANSFER_ID_CHARS) { "Invalid transfer id length ${transferId.length}" }
+                ChatEnvelope.FileReply(transferId, obj.getBoolean("ok"))
+            }.getOrElse { ChatEnvelope.Unknown(kind) }
             else -> ChatEnvelope.Unknown(kind)
         }
     }
