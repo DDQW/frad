@@ -5,14 +5,19 @@
 // built from those — no generics, channels, maps, or []string may cross the
 // binding boundary, so async results go through the callback interfaces in
 // callbacks.go and bootstrap/relay lists cross as newline-delimited strings.
+// The one deliberate exception is the node-directory toolkit in directory.go
+// (functions taking libp2p types, which gomobile simply skips): it lives here
+// so cmd/bootstrap and cmd/nodecrawl apply exactly the rules the app does.
 package node
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -36,6 +41,9 @@ const ProtocolPrefix = "/frad"
 const (
 	ChatProtocolID     = "/frad/chat/1.0.0"
 	TransferProtocolID = "/frad/transfer/1.0.0"
+	// DHTProtocolID is the Kademlia protocol id ProtocolPrefix produces. Only
+	// mode-Server DHT nodes register it, which is what IsFradServer checks.
+	DHTProtocolID = ProtocolPrefix + "/kad/1.0.0"
 )
 
 // advertiseRetryInterval is used when a DHT Advertise call fails outright
@@ -78,6 +86,18 @@ type Config struct {
 	// Costs: everything is relayed (slower, and subject to the relay's limits),
 	// and peers that hold no relay reservation themselves can't be reached.
 	RelayOnly bool
+	// InterfaceAddrs is a newline-delimited list of this device's IP addresses,
+	// supplied by Kotlin. Go can't enumerate network interfaces on Android 11+
+	// (netlink RTM_GETLINK is denied to apps), so without this libp2p only
+	// knows - and only advertises - loopback addresses, and no other peer can
+	// ever dial this device directly. Empty keeps libp2p's own detection;
+	// ignored in RelayOnly mode, which must never reveal an address. See
+	// interface_addrs.go.
+	InterfaceAddrs string
+
+	// allowPrivateNodeAddrs accepts loopback/LAN addresses in node lists (see
+	// directory.go). Tests only: they run on loopback.
+	allowPrivateNodeAddrs bool
 }
 
 // Host wraps a libp2p host + a Kademlia DHT scoped to ProtocolPrefix. Direct
@@ -98,6 +118,16 @@ type Host struct {
 	mu             sync.Mutex
 	pendingStreams map[string]network.Stream
 	nextHandle     int64
+
+	// Node directory (directory.go). bootstrapPeers is the configured list as
+	// given; sharedBootstrapPeers is the part of it fit to hand to others.
+	bootstrapPeers        []peer.AddrInfo
+	sharedBootstrapPeers  []peer.AddrInfo
+	allowPrivateNodeAddrs bool
+
+	nodesMu      sync.Mutex
+	knownNodes   []peer.AddrInfo // set by SetKnownNodes: what this host shares
+	learnedNodes []peer.AddrInfo // pushed to this host by others, until TakeLearnedNodes
 }
 
 // NewHost constructs (but does not yet bootstrap) a wide-range libp2p host.
@@ -116,6 +146,18 @@ func NewHost(cfg *Config, peers PeerFoundListener, streams IncomingStreamListene
 		return nil, err
 	}
 
+	// The interface-address factory runs inside libp2p.New already, before
+	// there's a host to ask for its listen addresses (and their OS-assigned
+	// ports); until built is set it passes addresses through unchanged, and
+	// libp2p re-evaluates them every few seconds anyway.
+	var built atomic.Pointer[host.Host]
+	listenAddrs := func() []multiaddr.Multiaddr {
+		if h := built.Load(); h != nil {
+			return (*h).Network().ListenAddresses()
+		}
+		return nil
+	}
+
 	opts := []libp2p.Option{libp2p.Identity(priv)}
 	if cfg.RelayOnly {
 		if len(relays) == 0 {
@@ -123,17 +165,26 @@ func NewHost(cfg *Config, peers PeerFoundListener, streams IncomingStreamListene
 		}
 		opts = append(opts, relayOnlyOptions(relays)...)
 	} else {
+		// Dual-stack: many mobile networks hand out a public IPv6 address next
+		// to a CGNAT'd IPv4 one, and IPv6 is then the only path by which a
+		// phone can be dialed directly.
 		opts = append(opts, libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", cfg.ListenPort),
+			fmt.Sprintf("/ip6/::/tcp/%d", cfg.ListenPort),
+			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", cfg.ListenPort),
 		))
 		opts = append(opts, relayOptions(relays)...)
+		if ips := parseInterfaceIPs(cfg.InterfaceAddrs); len(ips) > 0 {
+			opts = append(opts, libp2p.AddrsFactory(interfaceAddrsFactory(ips, listenAddrs)))
+		}
 	}
 
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating libp2p host: %w", err)
 	}
+	built.Store(&h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -148,11 +199,16 @@ func NewHost(cfg *Config, peers PeerFoundListener, streams IncomingStreamListene
 		ctx: ctx, cancel: cancel,
 		h: h, dht: kadDHT,
 		peersListener: peers, streamsListener: streams,
-		pendingStreams: make(map[string]network.Stream),
+		pendingStreams:        make(map[string]network.Stream),
+		bootstrapPeers:        relays,
+		sharedBootstrapPeers:  shareableNodes(relays, cfg.allowPrivateNodeAddrs),
+		allowPrivateNodeAddrs: cfg.allowPrivateNodeAddrs,
 	}
 
 	h.SetStreamHandler(protocol.ID(ChatProtocolID), result.handleIncomingStream(ChatProtocolID))
 	h.SetStreamHandler(protocol.ID(TransferProtocolID), result.handleIncomingStream(TransferProtocolID))
+	h.SetStreamHandler(protocol.ID(NodesProtocolID),
+		NodeListHandler(result.sharedNodes, result.addLearnedNodes, cfg.allowPrivateNodeAddrs))
 
 	// Eager connect to the configured bootstrap/relay peers so DHT bootstrap
 	// below has a head start; dialing also happens lazily on demand, so a
@@ -305,11 +361,124 @@ func (n *Host) dropPendingStream(handle string) {
 	}
 }
 
+// SetKnownNodes sets the server list this host hands to anyone who asks over
+// NodesProtocolID - typically the app's saved list, so a server address learned
+// once keeps spreading even after its original source is gone. Invalid entries
+// are dropped and the list is capped (MaxNodeListEntries, diversity limits);
+// the configured bootstrap peers are shared as well, after these.
+func (n *Host) SetKnownNodes(newlineList string) {
+	known := MergeNodeLists(MaxNodeListEntries, ParseNodeList(newlineList, n.allowPrivateNodeAddrs))
+	n.nodesMu.Lock()
+	n.knownNodes = known
+	n.nodesMu.Unlock()
+}
+
+// ExchangeNodesWithBootstrapPeers swaps node lists with every configured
+// bootstrap peer at once (connecting first where needed) and returns the
+// merged, validated lists they sent back, newline-delimited. Peers that can't
+// be reached are skipped; it only fails if none of them answered.
+func (n *Host) ExchangeNodesWithBootstrapPeers() (string, error) {
+	if len(n.bootstrapPeers) == 0 {
+		return "", errors.New("no bootstrap peers configured")
+	}
+	mine := n.sharedNodes()
+	lists := make([][]peer.AddrInfo, len(n.bootstrapPeers))
+	errs := make([]error, len(n.bootstrapPeers))
+	var wg sync.WaitGroup
+	for i, bp := range n.bootstrapPeers {
+		wg.Go(func() {
+			lists[i], errs[i] = n.exchangeNodesWith(bp, mine)
+		})
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err == nil {
+			return FormatNodeList(MergeNodeLists(MaxNodeListEntries, lists...)), nil
+		}
+	}
+	return "", errors.Join(errs...)
+}
+
+func (n *Host) exchangeNodesWith(ai peer.AddrInfo, mine []peer.AddrInfo) ([]peer.AddrInfo, error) {
+	ctx, cancel := context.WithTimeout(n.ctx, nodeExchangeTimeout)
+	defer cancel()
+	if err := n.h.Connect(ctx, ai); err != nil {
+		return nil, fmt.Errorf("connecting to %s: %w", ai.ID, err)
+	}
+	return ExchangeNodeList(ctx, n.h, ai.ID, mine, n.allowPrivateNodeAddrs)
+}
+
+// ExchangeNodesWithPeer swaps node lists with any peer this host can reach -
+// e.g. the other side of a chat, so phones spread server addresses among
+// themselves too - and returns that peer's list, validated and newline-
+// delimited. A relayed connection is fine for this: a node list is tiny.
+func (n *Host) ExchangeNodesWithPeer(peerId string) (string, error) {
+	pid, err := peer.Decode(peerId)
+	if err != nil {
+		return "", fmt.Errorf("invalid peer id %q: %w", peerId, err)
+	}
+	ctx := network.WithAllowLimitedConn(n.ctx, "frad node list")
+	theirs, err := ExchangeNodeList(ctx, n.h, pid, n.sharedNodes(), n.allowPrivateNodeAddrs)
+	if err != nil {
+		return "", err
+	}
+	return FormatNodeList(theirs), nil
+}
+
+// TakeLearnedNodes returns, newline-delimited, the validated node lists other
+// peers have pushed to this host since the last call, and forgets them. They
+// are unverified candidates - anyone can push anything well-formed - and are
+// capped at MaxNodeListEntries until taken.
+func (n *Host) TakeLearnedNodes() string {
+	n.nodesMu.Lock()
+	learned := n.learnedNodes
+	n.learnedNodes = nil
+	n.nodesMu.Unlock()
+	return FormatNodeList(learned)
+}
+
+// sharedNodes is what this host answers NodesProtocolID with.
+func (n *Host) sharedNodes() []peer.AddrInfo {
+	n.nodesMu.Lock()
+	known := n.knownNodes
+	n.nodesMu.Unlock()
+	return MergeNodeLists(MaxNodeListEntries, known, n.sharedBootstrapPeers)
+}
+
+func (n *Host) addLearnedNodes(_ peer.ID, infos []peer.AddrInfo) {
+	n.nodesMu.Lock()
+	defer n.nodesMu.Unlock()
+	n.learnedNodes = MergeNodeLists(MaxNodeListEntries, n.learnedNodes, infos)
+}
+
+// shareableNodes keeps the addresses of infos that CheckNodeAddr accepts. The
+// bootstrap list is user-configured and may legitimately point at a LAN node,
+// which is fine to use but not to hand to strangers.
+func shareableNodes(infos []peer.AddrInfo, allowPrivate bool) []peer.AddrInfo {
+	var out []peer.AddrInfo
+	for _, info := range infos {
+		var addrs []multiaddr.Multiaddr
+		for _, addr := range info.Addrs {
+			if CheckNodeAddr(addr, allowPrivate) == nil {
+				addrs = append(addrs, addr)
+			}
+		}
+		if len(addrs) > 0 {
+			out = append(out, peer.AddrInfo{ID: info.ID, Addrs: addrs})
+		}
+	}
+	return out
+}
+
 // parseAddrInfos parses a newline-delimited list of "/ip4/.../p2p/<id>"-style
 // multiaddrs (blank lines ignored) into peer.AddrInfo, grouping multiple
 // addresses for the same peer id together.
+//
+// The user's order is kept (peer.AddrInfosFromP2pAddrs would shuffle it through
+// a map): it decides which peers are shared first (see sharedNodes).
 func parseAddrInfos(newlineDelimited string) ([]peer.AddrInfo, error) {
-	var addrs []multiaddr.Multiaddr
+	var infos []peer.AddrInfo
+	index := make(map[peer.ID]int)
 	for _, line := range strings.Split(newlineDelimited, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -319,14 +488,19 @@ func parseAddrInfos(newlineDelimited string) ([]peer.AddrInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid bootstrap multiaddr %q: %w", line, err)
 		}
-		addrs = append(addrs, ma)
-	}
-	if len(addrs) == 0 {
-		return nil, nil
-	}
-	infos, err := peer.AddrInfosFromP2pAddrs(addrs...)
-	if err != nil {
-		return nil, fmt.Errorf("parsing bootstrap peer addrs (each needs a trailing /p2p/<peerid>): %w", err)
+		transport, id := peer.SplitAddr(ma)
+		if id == "" {
+			return nil, fmt.Errorf("bootstrap multiaddr %q needs a trailing /p2p/<peerid>", line)
+		}
+		i, seen := index[id]
+		if !seen {
+			i = len(infos)
+			index[id] = i
+			infos = append(infos, peer.AddrInfo{ID: id})
+		}
+		if transport != nil {
+			infos[i].Addrs = append(infos[i].Addrs, transport)
+		}
 	}
 	return infos, nil
 }
