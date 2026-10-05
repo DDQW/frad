@@ -51,6 +51,11 @@ fun RadarScreen(
     permissionsGranted: Boolean,
     onRequestPermissions: () -> Unit,
 ) {
+    val onboarded by viewModel.onboarded.collectAsState()
+    if (!onboarded) {
+        OnboardingScreen(viewModel)
+        return
+    }
     if (!permissionsGranted) {
         PermissionGate(onRequestPermissions)
         return

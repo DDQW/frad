@@ -59,6 +59,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
     var genderDraft by remember { mutableStateOf(viewModel.gender) }
     var ageDraft by remember { mutableStateOf(viewModel.age?.toString() ?: "") }
+    var shareAgeDraft by remember { mutableStateOf(viewModel.shareAge) }
     var bioDraft by remember { mutableStateOf(viewModel.bio) }
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
@@ -144,13 +145,20 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 FilterChip(selected = genderDraft == Gender.FEMALE, onClick = { genderDraft = Gender.FEMALE }, label = { Text("Female") })
             }
             Spacer(Modifier.height(12.dp))
+            val ageValid = (ageDraft.toIntOrNull() ?: 0) in Profile.MIN_AGE..Profile.MAX_AGE
             OutlinedTextField(
                 value = ageDraft,
                 onValueChange = { ageDraft = it.filter(Char::isDigit).take(3) },
-                label = { Text("Age (optional)") },
+                label = { Text("Age") },
+                isError = !ageValid,
+                supportingText = { if (!ageValid) Text("FRAD is for people aged ${Profile.MIN_AGE} and over.") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Show my age to matches", modifier = Modifier.weight(1f))
+                Switch(checked = shareAgeDraft, onCheckedChange = { shareAgeDraft = it })
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = bioDraft,
@@ -166,12 +174,16 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = {
-                viewModel.myPseudonym = draft
-                viewModel.gender = genderDraft
-                viewModel.age = ageDraft.toIntOrNull()
-                viewModel.bio = bioDraft
-            }) { Text("Save") }
+            Button(
+                enabled = ageValid && genderDraft != null,
+                onClick = {
+                    viewModel.myPseudonym = draft
+                    viewModel.gender = genderDraft
+                    viewModel.age = ageDraft.toIntOrNull()
+                    viewModel.shareAge = shareAgeDraft
+                    viewModel.bio = bioDraft
+                },
+            ) { Text("Save") }
             Spacer(Modifier.height(12.dp))
             Text(
                 "The part after # is unique to your device, so people who picked the same pseudonym as you stay distinguishable. " +

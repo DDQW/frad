@@ -17,7 +17,8 @@ import app.frad.chat.profile.Profile
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        if (!Profile(context).alwaysVisible || !bluetoothPermissionsGranted(context)) return
+        val profile = Profile(context)
+        if (!profile.onboarded || !profile.alwaysVisible || !bluetoothPermissionsGranted(context)) return
         // Starting a foreground service from the background can still be refused on some
         // versions/OEMs; the next app launch starts it anyway.
         runCatching { LocalBleService.startAlwaysVisible(context) }

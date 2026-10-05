@@ -111,7 +111,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         get() = profile.pseudonym
         set(value) { profile.pseudonym = value }
 
-    var gender: Gender
+    var gender: Gender?
         get() = profile.gender
         set(value) { profile.gender = value }
 
@@ -119,9 +119,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         get() = profile.age
         set(value) { profile.age = value }
 
+    var shareAge: Boolean
+        get() = profile.shareAge
+        set(value) { profile.shareAge = value }
+
     var bio: String
         get() = profile.bio
         set(value) { profile.bio = value }
+
+    private val _onboarded = MutableStateFlow(profile.onboarded)
+
+    /** False until the first-run setup is done - see [Profile.onboarded]. */
+    val onboarded: StateFlow<Boolean> = _onboarded.asStateFlow()
+
+    fun completeOnboarding(pseudonym: String, gender: Gender, age: Int, shareAge: Boolean) {
+        profile.completeOnboarding(pseudonym, gender, age, shareAge)
+        _onboarded.value = true
+        // Permissions may well have been granted before (e.g. updating from a build without
+        // onboarding), in which case nothing else would start the always-visible service now.
+        if (bluetoothPermissionsGranted()) onPermissionsGranted()
+    }
+
+    private fun bluetoothPermissionsGranted(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return true
+        val app = getApplication<Application>()
+        return listOf(
+            android.Manifest.permission.BLUETOOTH_SCAN,
+            android.Manifest.permission.BLUETOOTH_ADVERTISE,
+            android.Manifest.permission.BLUETOOTH_CONNECT,
+        ).all { app.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+    }
 
     var coarseGeohash: String?
         get() = profile.coarseGeohash
@@ -169,7 +196,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  always-visible service any earlier would call into BLE APIs before they're allowed to be
      *  used. A no-op if [Profile.alwaysVisible] is off. */
     fun onPermissionsGranted() {
-        if (profile.alwaysVisible) LocalBleService.startAlwaysVisible(getApplication())
+        // Nothing is advertised (or exchanged with anyone) before the first-run setup is done.
+        if (profile.onboarded && profile.alwaysVisible) LocalBleService.startAlwaysVisible(getApplication())
     }
 
     /** Only switches while idle on the outgoing layer, mirroring [ChatController.setBrowsing]'s

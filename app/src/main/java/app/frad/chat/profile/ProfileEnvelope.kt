@@ -10,7 +10,7 @@ import org.json.JSONObject
  *  contact, same as [app.frad.chat.chat.ChatMessage]s aren't. */
 data class RemoteProfile(
     val pseudonym: String,
-    val gender: Gender,
+    val gender: Gender?,
     val age: Int?,
     val bio: String,
     val photo: ByteArray?,
@@ -33,9 +33,9 @@ object ProfileEnvelope {
     fun encode(context: Context, profile: Profile): String {
         val json = JSONObject()
             .put(KEY_PSEUDONYM, profile.pseudonym)
-            .put(KEY_GENDER, profile.gender.name)
             .put(KEY_BIO, profile.bio)
-        profile.age?.let { json.put(KEY_AGE, it) }
+        profile.gender?.let { json.put(KEY_GENDER, it.name) }
+        if (profile.shareAge) profile.age?.let { json.put(KEY_AGE, it) }
         // java.util.Base64 (API 26+, same unwrapped standard alphabet android.util.Base64.NO_WRAP
         // produced before) rather than android.util.Base64, so this also runs in JVM unit tests.
         ProfilePhoto.bytesOrNull(context)?.let { json.put(KEY_PHOTO, Base64.getEncoder().encodeToString(it)) }
@@ -51,7 +51,7 @@ object ProfileEnvelope {
      *  photo is dropped - all of it comes from a stranger. */
     fun decode(json: String): RemoteProfile {
         val obj = JSONObject(json)
-        val gender = runCatching { Gender.valueOf(obj.optString(KEY_GENDER)) }.getOrDefault(Gender.MALE)
+        val gender = runCatching { Gender.valueOf(obj.optString(KEY_GENDER)) }.getOrNull()
         val age = if (obj.has(KEY_AGE)) obj.optInt(KEY_AGE).takeIf { it in Profile.MIN_AGE..Profile.MAX_AGE } else null
         val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }
             ?.takeIf { it.length <= (MAX_PHOTO_BYTES + 2) / 3 * 4 }

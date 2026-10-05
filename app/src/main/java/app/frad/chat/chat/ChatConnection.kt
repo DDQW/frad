@@ -2,6 +2,7 @@ package app.frad.chat.chat
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 import app.frad.chat.crypto.ChatSession
 import app.frad.chat.crypto.Identity
 import app.frad.chat.profile.ProfileEnvelope
@@ -32,6 +33,10 @@ sealed interface ChatEvent {
     /** The peer turned out to be on the block list (by identity or by device) before we revealed
      *  anything about ourselves; the caller should drop the connection. */
     data object Blocked : ChatEvent
+
+    /** One side is an adult and the other isn't - see [ChatConnection]'s step 3. Neither side has
+     *  seen the other's profile; the caller should drop the connection. */
+    data object AgeGroupMismatch : ChatEvent
 }
 
 /**
@@ -43,7 +48,10 @@ sealed interface ChatEvent {
  *  2. a block-list check on the peer's now-revealed long-term identity - discovery only ever
  *     exposes rotating ids, so this is the first point blocking can be enforced,
  *  3. an exchange of device fingerprints for a second, identity-independent block check (M5),
- *  4. only once both pass, an exchange of profiles, so a blocked peer never learns ours,
+ *     together with each side's age group: adults are only matched with adults and minors with
+ *     minors, decided here - before any profile, photo or message is exchanged,
+ *  4. only once all that passes, an exchange of profiles, so a blocked or mismatched peer never
+ *     learns ours,
  *  5. after that, encrypted [ChatEnvelope]s.
  *
  * The Noise initiator is always the side that asked for the chat. Not thread-safe for
@@ -57,6 +65,7 @@ class ChatConnection(
     /** The device fingerprint to present to a peer, given their static key - see
      *  [app.frad.chat.safety.DeviceFingerprint.forPeer]. */
     private val deviceFingerprintFor: (remoteStaticKey: ByteArray) -> String,
+    private val localIsAdult: Boolean,
     private val localProfile: () -> String,
     private val isBlocked: (String) -> Boolean,
 ) {
@@ -109,10 +118,15 @@ class ChatConnection(
             afterHandshake()
         }
         Step.EXPECT_DEVICE_ID -> {
-            val fingerprint = session.decryptMessage(frame)
+            val announcement = JSONObject(session.decryptMessage(frame))
+            val fingerprint = announcement.getString(KEY_FINGERPRINT)
+            val remoteIsAdult = announcement.getBoolean(KEY_ADULT)
             if (isBlocked(fingerprint)) {
                 step = Step.BLOCKED
                 ChatEvent.Blocked
+            } else if (remoteIsAdult != localIsAdult) {
+                step = Step.BLOCKED
+                ChatEvent.AgeGroupMismatch
             } else {
                 remoteDeviceFingerprint = fingerprint
                 step = Step.EXPECT_PROFILE
@@ -137,7 +151,10 @@ class ChatConnection(
             return ChatEvent.Blocked
         }
         step = Step.EXPECT_DEVICE_ID
-        sendEncrypted(deviceFingerprintFor(session.remoteStaticKey()))
+        val announcement = JSONObject()
+            .put(KEY_FINGERPRINT, deviceFingerprintFor(session.remoteStaticKey()))
+            .put(KEY_ADULT, localIsAdult)
+        sendEncrypted(announcement.toString())
         return null
     }
 
@@ -163,5 +180,10 @@ class ChatConnection(
 
     private suspend fun sendEncrypted(plaintext: String) {
         sendMutex.withLock { transport.send(session.encryptMessage(plaintext)) }
+    }
+
+    private companion object {
+        const val KEY_FINGERPRINT = "fp"
+        const val KEY_ADULT = "adult"
     }
 }

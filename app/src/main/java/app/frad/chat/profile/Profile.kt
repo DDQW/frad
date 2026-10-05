@@ -75,24 +75,40 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_ALWAYS_VISIBLE, true)
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_VISIBLE, value).apply() }
 
-    /** Shown to whoever you match with, alongside the pseudonym (see [ProfileEnvelope]) - unlike
-     *  the pseudonym, always has a value once read, matching the "Male/Female, required" choice
-     *  made for this field; defaults on first read exactly like [pseudonym] does. */
-    var gender: Gender
-        get() {
-            val stored = prefs.getString(KEY_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() }
-            if (stored != null) return stored
-            val generated = Gender.entries[Random.nextInt(Gender.entries.size)]
-            prefs.edit().putString(KEY_GENDER, generated.name).apply()
-            return generated
-        }
-        set(value) { prefs.edit().putString(KEY_GENDER, value.name).apply() }
+    /** Shown to whoever you match with, alongside the pseudonym (see [ProfileEnvelope]). Chosen by
+     *  the user during onboarding (see [onboarded]) - never made up: null until then. */
+    var gender: Gender?
+        get() = prefs.getString(KEY_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() }
+        set(value) { prefs.edit().putString(KEY_GENDER, value?.name).apply() }
 
-    /** Optional; null means not shared. Clamped to a plausible human range so a peer can't be
-     *  sent (or send) a nonsense value. */
+    /** Required (asked during onboarding, at least [MIN_AGE]) - it decides which age group you can
+     *  be matched with, see [isAdult]. Whether the number itself is shown to matches is
+     *  [shareAge]. Null until set, or if a stored value is outside the allowed range. */
     var age: Int?
         get() = prefs.getInt(KEY_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE }
         set(value) { prefs.edit().putInt(KEY_AGE, value?.coerceIn(MIN_AGE, MAX_AGE) ?: -1).apply() }
+
+    /** Whether matches see your [age]; the age group ([isAdult]) is always exchanged regardless. */
+    var shareAge: Boolean
+        get() = prefs.getBoolean(KEY_SHARE_AGE, true)
+        set(value) { prefs.edit().putBoolean(KEY_SHARE_AGE, value).apply() }
+
+    /** Adults are only ever matched with adults and minors with minors - see
+     *  [app.frad.chat.chat.ChatConnection]. Self-declared, like everything in a no-account app. */
+    val isAdult: Boolean get() = (age ?: 0) >= ADULT_AGE
+
+    /** Whether the first-run setup (pseudonym, gender, age) has been completed. Nothing is
+     *  advertised or exchanged with anyone before that. */
+    val onboarded: Boolean get() = prefs.getBoolean(KEY_ONBOARDED, false) && gender != null && age != null
+
+    fun completeOnboarding(pseudonym: String, gender: Gender, age: Int, shareAge: Boolean) {
+        require(age >= MIN_AGE) { "FRAD is for people aged $MIN_AGE and over" }
+        this.pseudonym = pseudonym
+        this.gender = gender
+        this.age = age
+        this.shareAge = shareAge
+        prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
+    }
 
     /** Optional short free-text description, shown to whoever you match with. */
     var bio: String
@@ -109,11 +125,14 @@ class Profile(context: Context) {
         private const val KEY_RELAY_ONLY = "wide_range_relay_only"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
+        private const val KEY_SHARE_AGE = "share_age"
+        private const val KEY_ONBOARDED = "onboarded"
         private const val KEY_BIO = "bio"
         private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
         const val MAX_BIO_LENGTH = 140
-        const val MIN_AGE = 13
+        const val MIN_AGE = 16
+        const val ADULT_AGE = 18
         const val MAX_AGE = 120
 
         /** Short, stable suffix derived from a peer's long-term id, so that two people who

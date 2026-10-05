@@ -26,6 +26,7 @@ class ChatConnectionTest {
         val fingerprint: String,
         val pseudonym: String,
         val blocked: MutableSet<String> = mutableSetOf(),
+        val adult: Boolean = true,
     ) {
         val transport = RecordingTransport()
         val events = mutableListOf<ChatEvent>()
@@ -37,14 +38,15 @@ class ChatConnectionTest {
             identity = identity,
             transport = transport,
             deviceFingerprintFor = { fingerprint },
+            localIsAdult = adult,
             localProfile = { JSONObject().put("pseudonym", pseudonym).put("gender", "FEMALE").toString() },
             isBlocked = { it in blocked },
         ).also { connection = it }
     }
 
-    private fun side(name: String): Side {
+    private fun side(name: String, adult: Boolean = true): Side {
         val (priv, pub) = Primitives.generateKeyPair()
-        return Side(Identity.fromRawKeyPair(priv, pub), fingerprint = "fp-$name", pseudonym = name)
+        return Side(Identity.fromRawKeyPair(priv, pub), fingerprint = "fp-$name", pseudonym = name, adult = adult)
     }
 
     /** Delivers queued frames back and forth until both sides go quiet. */
@@ -116,6 +118,26 @@ class ChatConnectionTest {
         assertEquals(listOf<ChatEvent>(ChatEvent.Blocked), alice.events)
         assertTrue(bob.events.isEmpty())
         assertNull(alice.connection.remotePeer)
+    }
+
+    @Test
+    fun `an adult and a minor are never matched, and neither sees the other's profile`() = runBlocking<Unit> {
+        val alice = side("alice", adult = true)
+        val bob = side("bob", adult = false)
+
+        connected(alice, bob)
+
+        assertEquals(listOf<ChatEvent>(ChatEvent.AgeGroupMismatch), alice.events)
+        assertEquals(listOf<ChatEvent>(ChatEvent.AgeGroupMismatch), bob.events)
+        assertNull(alice.connection.remotePeer)
+        assertNull(bob.connection.remotePeer)
+    }
+
+    @Test
+    fun `two minors are matched with each other`() = runBlocking<Unit> {
+        val (alice, bob) = connected(side("alice", adult = false), side("bob", adult = false))
+        assertTrue(alice.events.single() is ChatEvent.Ready)
+        assertTrue(bob.events.single() is ChatEvent.Ready)
     }
 
     @Test

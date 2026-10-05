@@ -156,6 +156,7 @@ class WideRangeChatController(
             identity = identity,
             transport = transport,
             deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
+            localIsAdult = profile.isAdult,
             localProfile = { ProfileEnvelope.encode(context, profile) },
             isBlocked = { blockList.isBlocked(it) },
         )
@@ -511,6 +512,10 @@ class WideRangeChatController(
                     null -> Unit
                     ChatEvent.Blocked -> {
                         endActive("blocked peer")
+                        return@launch
+                    }
+                    ChatEvent.AgeGroupMismatch -> {
+                        endActive("Not a match: FRAD only connects adults with adults and minors with minors.")
                         return@launch
                     }
                     is ChatEvent.Ready -> {

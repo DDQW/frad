@@ -203,6 +203,7 @@ class BleChatController(
             identity = identity,
             transport = transport,
             deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
+            localIsAdult = profile.isAdult,
             localProfile = { ProfileEnvelope.encode(context, profile) },
             isBlocked = { blockList.isBlocked(it) },
         )
@@ -578,6 +579,7 @@ class BleChatController(
         when (event) {
             null -> Unit
             ChatEvent.Blocked -> abortLink(deviceAddress, "blocked peer")
+            ChatEvent.AgeGroupMismatch -> abortLink(deviceAddress, AGE_MISMATCH_REASON)
             is ChatEvent.Ready -> {
                 if (deviceAddress != activeAddress) {
                     abortLink(deviceAddress, "superseded")
@@ -611,6 +613,7 @@ class BleChatController(
         const val STALE_PEER_CHECK_MILLIS = 10_000L
         const val PEER_TTL_MILLIS = 30_000L
         const val SESSION_ROTATION_MILLIS = 10 * 60_000L
+        const val AGE_MISMATCH_REASON = "Not a match: FRAD only connects adults with adults and minors with minors."
         const val BLUETOOTH_OFF_REASON = "Bluetooth is off - FRAD continues automatically once it's back on."
         const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }

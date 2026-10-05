@@ -85,7 +85,7 @@ import app.frad.chat.ui.theme.fradExtraColors
 internal fun ChatContent(
     remotePeerId: String,
     remotePseudonym: String,
-    remoteGender: Gender,
+    remoteGender: Gender?,
     remoteAge: Int?,
     remoteBio: String,
     remotePhoto: ByteArray?,
@@ -420,9 +420,13 @@ private fun FileMessageContent(message: ChatMessage, onOpen: () -> Unit) {
     }
 }
 
-private fun genderAgeLine(gender: Gender, age: Int?): String {
-    val genderLabel = if (gender == Gender.MALE) "Male" else "Female"
-    return if (age != null) "$genderLabel, $age" else genderLabel
+private fun genderAgeLine(gender: Gender?, age: Int?): String {
+    val genderLabel = when (gender) {
+        Gender.MALE -> "Male"
+        Gender.FEMALE -> "Female"
+        null -> null
+    }
+    return listOfNotNull(genderLabel, age?.toString()).joinToString(", ")
 }
 
 private fun openFile(context: Context, message: ChatMessage) {
