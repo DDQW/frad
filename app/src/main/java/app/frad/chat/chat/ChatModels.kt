@@ -22,6 +22,9 @@ data class ChatMessage(
  *  implausible size in a file offer. */
 const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
 
+/** Where a photo swap (see [ChatEnvelope.PhotoRequest]) stands. */
+enum class PhotoSwap { WE_ASKED, THEY_ASKED }
+
 sealed interface ChatUiState {
     /** Broadcasting is off; nothing is happening. */
     data object Idle : ChatUiState
@@ -58,6 +61,9 @@ sealed interface ChatUiState {
         val incomingFile: FileOffer? = null,
         /** What the peer picked on their profile (see [app.frad.chat.profile.Interest]). */
         val remoteInterests: Set<app.frad.chat.profile.Interest> = emptySet(),
+        /** They have a photo they only swap on request (see [ChatEnvelope.PhotoRequest]). */
+        val remotePhotoHidden: Boolean = false,
+        val photoSwap: PhotoSwap? = null,
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

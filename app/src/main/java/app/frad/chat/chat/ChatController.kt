@@ -38,6 +38,12 @@ interface ChatController {
 
     /** Stops the file transfer - or the request for one - that [transferStatus] describes. */
     fun cancelTransfer()
+
+    /** Asks the peer to swap profile photos (see [ChatEnvelope.PhotoRequest]). */
+    fun requestPhotoSwap()
+
+    /** The user's answer to [ChatUiState.Chatting.photoSwap] == THEY_ASKED. */
+    fun answerPhotoSwap(accept: Boolean)
     fun endActiveConnection(reason: String)
     fun blockActivePeer()
     fun reportActivePeer(reason: String)

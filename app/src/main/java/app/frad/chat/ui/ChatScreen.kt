@@ -12,6 +12,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.Column
@@ -91,6 +93,7 @@ import app.frad.chat.profile.Interest
 import app.frad.chat.profile.Profile
 import app.frad.chat.safety.Nudges
 import app.frad.chat.chat.FileOffer
+import app.frad.chat.chat.PhotoSwap
 import app.frad.chat.ui.theme.fradExtraColors
 import java.io.File
 import java.time.Instant
@@ -102,6 +105,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ChatContent(
     remotePeerId: String,
@@ -124,6 +128,11 @@ internal fun ChatContent(
     onAnswerIncomingFile: (accept: Boolean) -> Unit,
     remoteInterests: Set<Interest>,
     myInterests: Set<Interest>,
+    /** They keep their photo back until both agree to swap (see ChatEnvelope.PhotoRequest). */
+    remotePhotoHidden: Boolean,
+    photoSwap: PhotoSwap?,
+    onRequestPhotoSwap: () -> Unit,
+    onAnswerPhotoSwap: (accept: Boolean) -> Unit,
     errorMessage: String?,
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
@@ -285,7 +294,14 @@ internal fun ChatContent(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (remotePhotoHidden) {
+                        AssistChip(
+                            onClick = onRequestPhotoSwap,
+                            enabled = photoSwap == null,
+                            label = { Text(if (photoSwap == PhotoSwap.WE_ASKED) "Asked to swap photos…" else "Swap photos") },
+                        )
+                    }
                     AssistChip(
                         onClick = onSaveContact,
                         enabled = !alreadySaved,
@@ -370,6 +386,20 @@ internal fun ChatContent(
             )
         }
 
+        if (photoSwap == PhotoSwap.THEY_ASKED) {
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text(
+                        "${Profile.displayName(remotePseudonym, remotePeerId)} would like to swap profile photos.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { onAnswerPhotoSwap(false) }) { Text("No thanks") }
+                        TextButton(onClick = { onAnswerPhotoSwap(true) }) { Text("Swap") }
+                    }
+                }
+            }
+        }
         if (incomingFile != null) {
             IncomingFileCard(
                 fromName = Profile.displayName(remotePseudonym, remotePeerId),

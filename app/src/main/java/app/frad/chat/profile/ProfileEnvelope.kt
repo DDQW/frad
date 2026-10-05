@@ -15,6 +15,8 @@ data class RemoteProfile(
     val bio: String,
     val photo: ByteArray?,
     val interests: Set<Interest> = emptySet(),
+    /** They have a photo but only swap it on request (see [Profile.photoOnRequest]). */
+    val photoHidden: Boolean = false,
 )
 
 /**
@@ -31,6 +33,7 @@ object ProfileEnvelope {
     private const val KEY_BIO = "bio"
     private const val KEY_PHOTO = "photo"
     private const val KEY_INTERESTS = "tags"
+    private const val KEY_PHOTO_HIDDEN = "photoHidden"
 
     fun encode(context: Context, profile: Profile): String {
         val json = JSONObject()
@@ -41,7 +44,9 @@ object ProfileEnvelope {
         if (profile.shareAge) profile.age?.let { json.put(KEY_AGE, it) }
         // java.util.Base64 (API 26+, same unwrapped standard alphabet android.util.Base64.NO_WRAP
         // produced before) rather than android.util.Base64, so this also runs in JVM unit tests.
-        ProfilePhoto.bytesOrNull(context)?.let { json.put(KEY_PHOTO, Base64.getEncoder().encodeToString(it)) }
+        ProfilePhoto.bytesOrNull(context)?.let {
+            if (profile.photoOnRequest) json.put(KEY_PHOTO_HIDDEN, true) else json.put(KEY_PHOTO, encodePhoto(it))
+        }
         return json.toString()
     }
 
@@ -56,9 +61,7 @@ object ProfileEnvelope {
         val obj = JSONObject(json)
         val gender = runCatching { Gender.valueOf(obj.optString(KEY_GENDER)) }.getOrNull()
         val age = if (obj.has(KEY_AGE)) obj.optInt(KEY_AGE).takeIf { it in Profile.MIN_AGE..Profile.MAX_AGE } else null
-        val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }
-            ?.takeIf { it.length <= (MAX_PHOTO_BYTES + 2) / 3 * 4 }
-            ?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
+        val photo = decodePhoto(obj.optString(KEY_PHOTO, ""))
         return RemoteProfile(
             pseudonym = TextSanitizer.pseudonym(obj.optString(KEY_PSEUDONYM, "")).ifEmpty { "Guest" },
             gender = gender,
@@ -66,8 +69,17 @@ object ProfileEnvelope {
             bio = TextSanitizer.clean(obj.optString(KEY_BIO, ""), Profile.MAX_BIO_LENGTH, allowNewlines = true),
             photo = photo,
             interests = decodeInterests(obj),
+            photoHidden = photo == null && obj.optBoolean(KEY_PHOTO_HIDDEN, false),
         )
     }
+
+    fun encodePhoto(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)
+
+    /** A peer's photo, as sent with the profile or swapped later; null if absent, malformed or
+     *  larger than a [ProfilePhoto] thumbnail can be. */
+    fun decodePhoto(base64: String): ByteArray? = base64.ifEmpty { null }
+        ?.takeIf { it.length <= (MAX_PHOTO_BYTES + 2) / 3 * 4 }
+        ?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
 
     /** Only known keys, at most [Interest.MAX_PER_PROFILE] of them - anything else is ignored. */
     private fun decodeInterests(obj: JSONObject): Set<Interest> {

@@ -44,6 +44,13 @@ sealed interface ChatEnvelope {
     /** Wide-range chats: the file itself follows on a second libp2p stream. */
     data class WideOffer(val offer: FileOffer) : ChatEnvelope
 
+    /** "Shall we swap photos?" - for profiles that keep the photo back (Profile.photoOnRequest). */
+    data object PhotoRequest : ChatEnvelope
+
+    /** The answer to a [PhotoRequest], or the requester's own photo after a yes: [photo] is the
+     *  base64 thumbnail, null for "no thanks". */
+    data class PhotoReply(val photo: String?) : ChatEnvelope
+
     /** A kind this version doesn't know. Ignored rather than treated as an error, so a newer
      *  peer adding a message type (typing indicator, receipts, ...) doesn't break older ones. */
     data class Unknown(val kind: String) : ChatEnvelope
@@ -58,6 +65,8 @@ object ChatEnvelopeJson {
     private const val KIND_WIDE_OFFER = "wide-transfer"
     private const val KIND_FILE_REQUEST = "file-req"
     private const val KIND_FILE_REPLY = "file-reply"
+    private const val KIND_PHOTO_REQUEST = "photo-req"
+    private const val KIND_PHOTO_REPLY = "photo"
 
     fun encode(envelope: ChatEnvelope): String = when (envelope) {
         is ChatEnvelope.Text -> JSONObject().put("k", KIND_TEXT).put("t", envelope.text).also { obj -> envelope.id?.let { obj.put("id", it) } }
@@ -69,6 +78,8 @@ object ChatEnvelopeJson {
         is ChatEnvelope.WideOffer -> putOffer(JSONObject().put("k", KIND_WIDE_OFFER), envelope.offer)
         is ChatEnvelope.FileRequest -> putOffer(JSONObject().put("k", KIND_FILE_REQUEST), envelope.offer)
         is ChatEnvelope.FileReply -> JSONObject().put("k", KIND_FILE_REPLY).put("tid", envelope.transferId).put("ok", envelope.accepted)
+        ChatEnvelope.PhotoRequest -> JSONObject().put("k", KIND_PHOTO_REQUEST)
+        is ChatEnvelope.PhotoReply -> JSONObject().put("k", KIND_PHOTO_REPLY).also { obj -> envelope.photo?.let { obj.put("p", it) } }
         is ChatEnvelope.Unknown -> JSONObject().put("k", envelope.kind)
     }.toString()
 
@@ -92,6 +103,8 @@ object ChatEnvelopeJson {
                 require(transferId.length in 1..MAX_TRANSFER_ID_CHARS) { "Invalid transfer id length ${transferId.length}" }
                 ChatEnvelope.FileReply(transferId, obj.getBoolean("ok"))
             }.getOrElse { ChatEnvelope.Unknown(kind) }
+            KIND_PHOTO_REQUEST -> ChatEnvelope.PhotoRequest
+            KIND_PHOTO_REPLY -> ChatEnvelope.PhotoReply(obj.optString("p", "").ifEmpty { null })
             else -> ChatEnvelope.Unknown(kind)
         }
     }

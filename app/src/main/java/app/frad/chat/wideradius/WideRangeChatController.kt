@@ -53,6 +53,7 @@ import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
 import app.frad.chat.pairing.SignalStrength
 import app.frad.chat.profile.Profile
+import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.profile.ProfileEnvelope
 import app.frad.chat.safety.BlockList
 import app.frad.chat.safety.Cooldown
@@ -106,7 +107,14 @@ class WideRangeChatController(
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     override val notices: SharedFlow<String> = _notices.asSharedFlow()
 
-    private val openChat by lazy { OpenChat(_state, scope, contactStore, historyStore, canReceiveFile = { _transferStatus.value == null }) }
+    private val openChat by lazy {
+        OpenChat(
+            _state, scope, contactStore, historyStore,
+            canReceiveFile = { _transferStatus.value == null },
+            ownPhoto = { ProfilePhoto.bytesOrNull(context) },
+            photoOnRequest = { profile.photoOnRequest },
+        )
+    }
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
@@ -500,6 +508,20 @@ class WideRangeChatController(
         scope.launch {
             val link = activeLink ?: return@launch
             if (link.chat.isReady) runCatching { openChat.answerFileRequest(link.chat, accept) }
+        }
+    }
+
+    override fun requestPhotoSwap() {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.requestPhotoSwap(link.chat) }
+        }
+    }
+
+    override fun answerPhotoSwap(accept: Boolean) {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.answerPhotoSwap(link.chat, accept) }
         }
     }
 

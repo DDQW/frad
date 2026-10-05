@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
+import app.frad.chat.profile.ProfileEnvelope
 
 /**
  * What both controllers do with a chat once it's open, independent of the transport: the
@@ -27,7 +28,14 @@ internal class OpenChat(
     private val contactStore: ContactStore,
     private val historyStore: ChatHistoryStore,
     private val canReceiveFile: () -> Boolean,
+    /** Our profile photo, for a photo swap (null: we have none). */
+    private val ownPhoto: () -> ByteArray? = { null },
+    /** Whether our profile keeps the photo back for a swap (Profile.photoOnRequest). */
+    private val photoOnRequest: () -> Boolean = { false },
 ) {
+    /** Whether our photo went to the peer during this chat already (in the profile or a swap). */
+    private var ourPhotoSent = false
+
     private var lastTypingSentAtMillis = 0L
     private var typingTimeout: Job? = null
 
@@ -58,10 +66,49 @@ internal class OpenChat(
             messages = if (contactStore.isSaved(peer.peerId)) historyStore.messagesFor(peer.peerId) else emptyList(),
             safetyNumber = SafetyNumber.of(ourPublicKey, peer.staticKey),
             remoteInterests = peer.profile.interests,
+            remotePhotoHidden = peer.profile.photoHidden,
         )
+        // Unless kept back, our photo already went out with the profile.
+        ourPhotoSent = !photoOnRequest() && ownPhoto() != null
+    }
+
+    /** Asks the peer to swap photos (see [ChatEnvelope.PhotoRequest]). */
+    suspend fun requestPhotoSwap(chat: ChatConnection) {
+        val current = state.value as? ChatUiState.Chatting ?: return
+        if (current.photoSwap != null) return
+        state.value = current.copy(photoSwap = PhotoSwap.WE_ASKED)
+        chat.send(ChatEnvelope.PhotoRequest)
+    }
+
+    /** The user's answer to the peer's [ChatEnvelope.PhotoRequest]. */
+    suspend fun answerPhotoSwap(chat: ChatConnection, accept: Boolean) {
+        val current = state.value as? ChatUiState.Chatting ?: return
+        if (current.photoSwap != PhotoSwap.THEY_ASKED) return
+        state.value = current.copy(photoSwap = null)
+        sendOurPhoto(chat, accept)
+    }
+
+    private suspend fun sendOurPhoto(chat: ChatConnection, accept: Boolean) {
+        val photo = if (accept) ownPhoto() else null
+        if (photo != null) ourPhotoSent = true
+        chat.send(ChatEnvelope.PhotoReply(photo?.let(ProfileEnvelope::encodePhoto)))
+    }
+
+    private suspend fun onPhotoReply(chat: ChatConnection, base64: String?) {
+        val current = state.value as? ChatUiState.Chatting ?: return
+        val photo = base64?.let(ProfileEnvelope::decodePhoto)
+        val weAsked = current.photoSwap == PhotoSwap.WE_ASKED
+        state.value = if (photo != null) {
+            current.copy(remotePhoto = photo, remotePhotoHidden = false, photoSwap = null)
+        } else {
+            current.copy(photoSwap = null)
+        }
+        // They said yes to our request: now ours goes to them, once.
+        if (weAsked && photo != null && !ourPhotoSent) sendOurPhoto(chat, accept = true)
     }
 
     fun end() {
+        ourPhotoSent = false
         typingTimeout?.cancel()
         typingTimeout = null
         lastTypingSentAtMillis = 0L
@@ -181,6 +228,16 @@ internal class OpenChat(
             is ChatEnvelope.Ack -> markDelivered(envelope.id)
             is ChatEnvelope.FileRequest -> onFileRequest(chat, envelope.offer)
             is ChatEnvelope.FileReply -> awaitingReply[envelope.transferId]?.complete(envelope.accepted)
+            ChatEnvelope.PhotoRequest -> {
+                val current = state.value as? ChatUiState.Chatting
+                when {
+                    current == null -> Unit
+                    // We show ours to everyone anyway - just send it again.
+                    ownPhoto() == null || ourPhotoSent || current.photoSwap == PhotoSwap.WE_ASKED -> sendOurPhoto(chat, accept = true)
+                    else -> state.value = current.copy(photoSwap = PhotoSwap.THEY_ASKED)
+                }
+            }
+            is ChatEnvelope.PhotoReply -> onPhotoReply(chat, envelope.photo)
             ChatEnvelope.Typing -> {
                 setPeerTyping(true)
                 typingTimeout?.cancel()

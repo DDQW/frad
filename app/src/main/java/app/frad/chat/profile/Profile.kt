@@ -68,6 +68,12 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
 
+    /** Don't send the profile photo with the profile; it's only swapped once both people in a
+     *  chat agree (see [app.frad.chat.chat.ChatEnvelope.PhotoRequest]). */
+    var photoOnRequest: Boolean
+        get() = prefs.getBoolean(KEY_PHOTO_ON_REQUEST, false)
+        set(value) { prefs.edit().putBoolean(KEY_PHOTO_ON_REQUEST, value).apply() }
+
     /** Shown to matches (see [Interest]); at most [Interest.MAX_PER_PROFILE]. */
     var interests: Set<Interest>
         get() = prefs.getString(KEY_INTERESTS, null)?.split(',')?.mapNotNull(Interest::fromKey)?.toSet() ?: emptySet()
@@ -152,6 +158,7 @@ class Profile(context: Context) {
         private const val KEY_HISTORY_RETENTION_DAYS = "history_retention_days"
         private const val KEY_VISIBLE_UNTIL = "visible_until"
         private const val KEY_INTERESTS = "interests"
+        private const val KEY_PHOTO_ON_REQUEST = "photo_on_request"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

@@ -47,6 +47,7 @@ import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
 import app.frad.chat.pairing.SignalStrength
 import app.frad.chat.profile.Profile
+import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.profile.ProfileEnvelope
 import app.frad.chat.safety.BlockList
 import app.frad.chat.safety.Cooldown
@@ -104,7 +105,12 @@ class BleChatController(
     override val notices: SharedFlow<String> = _notices.asSharedFlow()
 
     private val openChat by lazy {
-        OpenChat(_state, scope, contactStore, historyStore, canReceiveFile = { transferManager != null && _transferStatus.value == null })
+        OpenChat(
+            _state, scope, contactStore, historyStore,
+            canReceiveFile = { transferManager != null && _transferStatus.value == null },
+            ownPhoto = { ProfilePhoto.bytesOrNull(context) },
+            photoOnRequest = { profile.photoOnRequest },
+        )
     }
 
     private val _transferStatus = MutableStateFlow<String?>(null)
@@ -488,6 +494,20 @@ class BleChatController(
         scope.launch {
             val link = activeLink() ?: return@launch
             if (link.chat.isReady) openChat.answerFileRequest(link.chat, accept)
+        }
+    }
+
+    override fun requestPhotoSwap() {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.requestPhotoSwap(link.chat)
+        }
+    }
+
+    override fun answerPhotoSwap(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.answerPhotoSwap(link.chat, accept)
         }
     }
 

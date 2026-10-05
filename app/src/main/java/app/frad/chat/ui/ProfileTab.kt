@@ -77,6 +77,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var shareAgeDraft by remember { mutableStateOf(viewModel.shareAge) }
     var bioDraft by remember { mutableStateOf(viewModel.bio) }
     var interestsDraft by remember { mutableStateOf(viewModel.interests) }
+    var photoOnRequestDraft by remember { mutableStateOf(viewModel.photoOnRequest) }
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
@@ -183,6 +184,10 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 Text("Show my age to matches", modifier = Modifier.weight(1f))
                 Switch(checked = shareAgeDraft, onCheckedChange = { shareAgeDraft = it })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Show my photo only once we both agree to swap", modifier = Modifier.weight(1f))
+                Switch(checked = photoOnRequestDraft, onCheckedChange = { photoOnRequestDraft = it })
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = bioDraft,
@@ -225,6 +230,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                     viewModel.shareAge = shareAgeDraft
                     viewModel.bio = bioDraft
                     viewModel.interests = interestsDraft
+                    viewModel.photoOnRequest = photoOnRequestDraft
                 },
             ) { Text("Save") }
             Spacer(Modifier.height(12.dp))

@@ -259,6 +259,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         else -> null
     }
 
+    var photoOnRequest: Boolean
+        get() = profile.photoOnRequest
+        set(value) { profile.photoOnRequest = value }
+
     var interests: Set<app.frad.chat.profile.Interest>
         get() = profile.interests
         set(value) { profile.interests = value }
@@ -379,6 +383,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun answerIncomingFile(accept: Boolean) { activeController?.answerIncomingFile(accept) }
     fun cancelTransfer() { activeController?.cancelTransfer() }
+    fun requestPhotoSwap() { activeController?.requestPhotoSwap() }
+    fun answerPhotoSwap(accept: Boolean) { activeController?.answerPhotoSwap(accept) }
     fun blockActivePeer() { activeController?.blockActivePeer() }
     fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 

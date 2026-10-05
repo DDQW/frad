@@ -24,6 +24,9 @@ class ChatEnvelopeJsonTest {
             ChatEnvelope.FileRequest(offer),
             ChatEnvelope.FileReply("abc123", accepted = true),
             ChatEnvelope.FileReply("abc123", accepted = false),
+            ChatEnvelope.PhotoRequest,
+            ChatEnvelope.PhotoReply("AAEC"),
+            ChatEnvelope.PhotoReply(null),
         )
         for (envelope in envelopes) assertEquals(envelope, roundTrip(envelope))
     }

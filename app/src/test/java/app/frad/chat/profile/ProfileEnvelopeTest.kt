@@ -54,4 +54,12 @@ class ProfileEnvelopeTest {
         assertEquals(3, openers.size)
         assertEquals(3, Interest.icebreakers(emptySet()).size)
     }
+
+    @Test
+    fun `a photo kept back for a swap is announced, not sent`() {
+        assertEquals(true, decode { put("photoHidden", true) }.photoHidden)
+        assertNull(decode { put("photoHidden", true) }.photo)
+        // A photo that's there anyway wins over the flag.
+        assertEquals(false, decode { put("photoHidden", true); put("photo", "AAEC") }.photoHidden)
+    }
 }
