@@ -572,9 +572,9 @@ private fun FileMessageContent(message: ChatMessage, onOpen: () -> Unit) {
     val path = message.localPath ?: return
     if (message.mimeType?.startsWith("image/") == true) {
         // Up to 25 MB from a stranger: decoded subsampled to the preview size, off the main thread.
-        val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
+        val bitmap = produceState<ImageBitmap?>(initialValue = null, path) {
             value = withContext(Dispatchers.IO) { runCatching { decodeSampled(path, IMAGE_PREVIEW_MAX_PIXELS)?.asImageBitmap() }.getOrNull() }
-        }
+        }.value
         Column {
             Text(message.fileName ?: "Image", style = MaterialTheme.typography.bodySmall)
             if (bitmap != null) {
