@@ -88,6 +88,7 @@ import app.frad.chat.media.AudioRecorder
 import app.frad.chat.media.CaptureFiles
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
+import app.frad.chat.safety.Nudges
 import app.frad.chat.chat.FileOffer
 import app.frad.chat.ui.theme.fradExtraColors
 import java.io.File
@@ -136,6 +137,7 @@ internal fun ChatContent(
     var confirmBlock by remember { mutableStateOf(false) }
     var reportDialog by remember { mutableStateOf(false) }
     var showSafetyNumber by remember { mutableStateOf(false) }
+    var confirmSensitive by remember { mutableStateOf<Set<Nudges.Outgoing>>(emptySet()) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onSendFile(uri) {}
@@ -304,6 +306,26 @@ internal fun ChatContent(
         if (reportDialog) {
             ReportDialog(onDismiss = { reportDialog = false }, onReport = { reason -> reportDialog = false; onReport(reason) })
         }
+        if (confirmSensitive.isNotEmpty()) {
+            AlertDialog(
+                onDismissRequest = { confirmSensitive = emptySet() },
+                title = { Text("Share this?") },
+                text = {
+                    Text(
+                        "This looks like it contains ${confirmSensitive.joinToString(" and ") { it.label }}. " +
+                            "${remotePseudonym} isn't one of your contacts yet - once sent, it can't be taken back.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmSensitive = emptySet()
+                        onSend(draft)
+                        draft = ""
+                    }) { Text("Send anyway") }
+                },
+                dismissButton = { TextButton(onClick = { confirmSensitive = emptySet() }) { Text("Edit") } },
+            )
+        }
         if (showSafetyNumber) {
             AlertDialog(
                 onDismissRequest = { showSafetyNumber = false },
@@ -430,8 +452,14 @@ internal fun ChatContent(
                             }
                         val sendDraft = {
                             if (draft.isNotBlank()) {
-                                onSend(draft)
-                                draft = ""
+                                // Contact details to someone who isn't a contact yet: ask first.
+                                val sensitive = if (alreadySaved) emptySet() else Nudges.beforeSending(draft)
+                                if (sensitive.isEmpty()) {
+                                    onSend(draft)
+                                    draft = ""
+                                } else {
+                                    confirmSensitive = sensitive
+                                }
                             }
                         }
                         OutlinedTextField(
@@ -606,7 +634,20 @@ private fun MessageBubble(message: ChatMessage, veiled: Boolean, onOpenFile: () 
     Surface(color = bubbleColor, shape = shape, modifier = Modifier.widthIn(max = 280.dp)) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             when (message.kind) {
-                MessageKind.TEXT -> Text(message.text)
+                MessageKind.TEXT -> {
+                    Text(message.text)
+                    // From someone who isn't a contact: point out the usual lures (see Nudges).
+                    val warnings = remember(message.text, veiled) {
+                        if (veiled) Nudges.onReceived(message.text) else emptySet()
+                    }
+                    if (warnings.isNotEmpty()) {
+                        Text(
+                            "⚠ Careful: " + warnings.joinToString(", ") { it.label },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
                 MessageKind.FILE -> FileMessageContent(message, veiled = veiled, onOpen = onOpenFile)
             }
             Text(
