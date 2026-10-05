@@ -41,6 +41,7 @@ import app.frad.chat.safety.BlockEntry
 import app.frad.chat.safety.BlockList
 import app.frad.chat.wideradius.CoarseLocation
 import app.frad.chat.wideradius.Geohash
+import app.frad.chat.wideradius.NodeLinks
 import app.frad.chat.wideradius.WideRangeChatController
 import app.frad.chat.wideradius.WideRangeNode
 
@@ -167,9 +168,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         get() = profile.searchRadiusKm
         set(value) { profile.searchRadiusKm = value }
 
+    private val _bootstrapNodes = MutableStateFlow(profile.bootstrapNodes)
+
+    /** The saved bootstrap/relay nodes, observable so the Profile tab picks up a confirmed
+     *  [offerNodeLink] import while it's open. */
+    val savedBootstrapNodes: StateFlow<List<String>> = _bootstrapNodes.asStateFlow()
+
     var bootstrapNodes: List<String>
         get() = profile.bootstrapNodes
-        set(value) { profile.bootstrapNodes = value }
+        set(value) {
+            profile.bootstrapNodes = value
+            _bootstrapNodes.value = profile.bootstrapNodes
+        }
+
+    var wideRangeRelayOnly: Boolean
+        get() = profile.wideRangeRelayOnly
+        set(value) { profile.wideRangeRelayOnly = value }
+
+    var appLock: Boolean
+        get() = profile.appLock
+        set(value) { profile.appLock = value }
+
+    private val _pendingNodeImport = MutableStateFlow<List<String>>(emptyList())
+
+    /** Node addresses from a `frad://node` link waiting for the user to confirm - see [NodeLinks]. */
+    val pendingNodeImport: StateFlow<List<String>> = _pendingNodeImport.asStateFlow()
+
+    fun offerNodeLink(link: String) {
+        val addresses = NodeLinks.parse(link).filterNot { it in profile.bootstrapNodes }
+        if (addresses.isNotEmpty()) _pendingNodeImport.value = addresses
+    }
+
+    fun confirmNodeImport() {
+        bootstrapNodes = (profile.bootstrapNodes + _pendingNodeImport.value).distinct()
+        _pendingNodeImport.value = emptyList()
+    }
+
+    fun dismissNodeImport() { _pendingNodeImport.value = emptyList() }
+
+    /** A `frad://node` link for the configured nodes, to share - see [NodeLinks]. */
+    fun nodeShareLink(): String? = profile.bootstrapNodes.filter(NodeLinks::looksLikeNodeAddress).takeIf { it.isNotEmpty() }?.let(NodeLinks::build)
+
+    /** Panic button: erases everything FRAD has stored - identity, profile, contacts, history,
+     *  files, block list, keys in the Keystore - and closes the app. Irreversible by design. */
+    fun wipeEverything() {
+        val app = getApplication<Application>()
+        (app.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).clearApplicationUserData()
+    }
 
     /** See [Profile.alwaysVisible] / [LocalBleService]. Setting this also immediately starts or
      *  drops the persistent foreground service - safe to call any time this ViewModel's UI is

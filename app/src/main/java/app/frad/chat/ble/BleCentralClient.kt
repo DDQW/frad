@@ -68,8 +68,10 @@ class BleCentralClient(
         scanner?.startScan(listOf(filter), settings, scanCallback)
     }
 
+    /** Never throws: with Bluetooth already off, stopScan raises IllegalStateException, and a
+     *  teardown that throws would leave the caller half stopped. */
     fun stopScanning() {
-        scanner?.stopScan(scanCallback)
+        runCatching { scanner?.stopScan(scanCallback) }
     }
 
     fun connect(deviceAddress: String) {

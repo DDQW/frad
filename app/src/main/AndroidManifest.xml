@@ -70,10 +70,19 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Frad">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- frad://node?addr=... - bootstrap/relay node addresses shared by link or QR code
+                 (see wideradius/NodeLinks.kt); only ever added after the user confirms. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="frad" android:host="node" />
             </intent-filter>
         </activity>
 

@@ -62,6 +62,12 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_RELAY_ONLY, false)
         set(value) { prefs.edit().putBoolean(KEY_RELAY_ONLY, value).apply() }
 
+    /** Require fingerprint/face or the phone's PIN to open FRAD, and keep its screens out of the
+     *  recent-apps overview and screenshots - see [app.frad.chat.AppLock]. */
+    var appLock: Boolean
+        get() = prefs.getBoolean(KEY_APP_LOCK, false)
+        set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
+
     /** Whether local BLE discovery/chat should keep running in the background - via
      *  [app.frad.chat.ble.LocalBleService] as a foreground service with a persistent
      *  notification, never silently - instead of only while the app is open. Defaults to true:
@@ -123,6 +129,7 @@ class Profile(context: Context) {
         private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
         private const val KEY_ALWAYS_VISIBLE = "always_visible"
         private const val KEY_RELAY_ONLY = "wide_range_relay_only"
+        private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

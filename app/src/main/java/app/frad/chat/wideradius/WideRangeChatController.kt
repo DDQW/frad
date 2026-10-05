@@ -247,9 +247,7 @@ class WideRangeChatController(
                     startDiscoveryCollectors(ownTopic)
                 }
             } else {
-                discoveryJob?.cancel(); discoveryJob = null
-                incomingStreamJob?.cancel(); incomingStreamJob = null
-                findPeersJob?.cancel(); findPeersJob = null
+                stopDiscoveryCollectors()
                 endActive("stopped browsing")
                 _state.value = ChatUiState.Idle
                 nodeLifecycle.withLock {
@@ -262,7 +260,16 @@ class WideRangeChatController(
         }
     }
 
+    private fun stopDiscoveryCollectors() {
+        discoveryJob?.cancel(); discoveryJob = null
+        incomingStreamJob?.cancel(); incomingStreamJob = null
+        findPeersJob?.cancel(); findPeersJob = null
+    }
+
     private fun startDiscoveryCollectors(topic: String) {
+        // Never two collectors on the same flows: the second would close every stream the first
+        // one accepted (see onIncomingStream).
+        stopDiscoveryCollectors()
         discoveryJob = scope.launch {
             node.discoveredPeers().collect { peerId -> onPeerDiscovered(peerId) }
         }

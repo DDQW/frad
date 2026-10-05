@@ -1,6 +1,7 @@
 package app.frad.chat.ui
 
 import android.Manifest
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,7 +23,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -34,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import app.frad.chat.AppLock
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 import app.frad.chat.profile.ProfilePhoto
@@ -64,7 +69,12 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
-    var bootstrapDraft by remember { mutableStateOf(viewModel.bootstrapNodes.joinToString("\n")) }
+    val savedNodes by viewModel.savedBootstrapNodes.collectAsState()
+    var bootstrapDraft by remember { mutableStateOf(savedNodes.joinToString("\n")) }
+    LaunchedEffect(savedNodes) { bootstrapDraft = savedNodes.joinToString("\n") }
+    var relayOnly by remember { mutableStateOf(viewModel.wideRangeRelayOnly) }
+    var appLock by remember { mutableStateOf(viewModel.appLock) }
+    var confirmWipe by remember { mutableStateOf(false) }
     var locationDenied by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -309,9 +319,93 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 label = { Text("Bootstrap/relay multiaddrs") },
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { viewModel.bootstrapNodes = bootstrapDraft.lines().map { it.trim() }.filter { it.isNotEmpty() } }) {
-                Text("Save nodes")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { viewModel.bootstrapNodes = bootstrapDraft.lines().map { it.trim() }.filter { it.isNotEmpty() } }) {
+                    Text("Save nodes")
+                }
+                val shareLink = viewModel.nodeShareLink()
+                OutlinedButton(
+                    enabled = shareLink != null && savedNodes.isNotEmpty(),
+                    onClick = {
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shareLink)
+                        context.startActivity(Intent.createChooser(send, "Share servers"))
+                    },
+                ) { Text("Share servers") }
+            }
+            Text(
+                "Sharing sends a frad://node link - whoever opens it with FRAD is asked whether to add these nodes.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Hide my IP address", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Route every wide-range connection through the nodes above, so matches never learn " +
+                            "your IP address. Slower, and needs at least one node that relays. Applies the next " +
+                            "time wide-range is switched on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = relayOnly, onCheckedChange = { relayOnly = it; viewModel.wideRangeRelayOnly = it })
             }
         }
+
+        SectionCard(title = "Privacy & security") {
+            val lockAvailable = remember { AppLock.available(context) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("App lock", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (lockAvailable) {
+                            "Ask for your fingerprint, face or screen lock whenever FRAD is opened, and hide its " +
+                                "content from screenshots and the recent-apps view."
+                        } else {
+                            "Set a screen lock (PIN, pattern or password) in your phone's settings to use this."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = appLock && lockAvailable,
+                    enabled = lockAvailable,
+                    onCheckedChange = { appLock = it; viewModel.appLock = it },
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Delete all my data", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Erases your identity, profile, contacts, chat history, received files and block list from this " +
+                    "phone and closes FRAD. People you chatted with keep only what they saved themselves.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { confirmWipe = true },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) { Text("Delete everything") }
+        }
+    }
+
+    if (confirmWipe) {
+        AlertDialog(
+            onDismissRequest = { confirmWipe = false },
+            title = { Text("Delete everything?") },
+            text = { Text("This can't be undone. FRAD will close and start from scratch next time, with a new identity.") },
+            confirmButton = {
+                TextButton(onClick = { confirmWipe = false; viewModel.wipeEverything() }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel") } },
+        )
     }
 }

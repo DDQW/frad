@@ -153,9 +153,11 @@ class BlePeripheralServer(
 
     fun stop() {
         synchronized(lock) {
-            advertiser?.stopAdvertising(advertiseCallback)
+            // Teardown must not throw (stopAdvertising does once Bluetooth is off) - the GATT
+            // server below still has to be closed.
+            runCatching { advertiser?.stopAdvertising(advertiseCallback) }
             advertiser = null
-            gattServer?.close()
+            runCatching { gattServer?.close() }
             gattServer = null
             reassemblers.clear()
             devicesByAddress.clear()

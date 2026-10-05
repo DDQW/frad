@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -24,6 +25,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +61,7 @@ fun RadarScreen(
         OnboardingScreen(viewModel)
         return
     }
+    NodeImportDialog(viewModel)
     if (!permissionsGranted) {
         PermissionGate(onRequestPermissions)
         return
@@ -135,4 +138,30 @@ private fun PermissionGate(onRequestPermissions: () -> Unit) {
             Button(onClick = onRequestPermissions) { Text("Grant permissions") }
         }
     }
+}
+
+/** Confirms the nodes from an opened `frad://node` link before they're added - a link from a
+ *  stranger shouldn't silently change which servers this phone talks to. */
+@Composable
+private fun NodeImportDialog(viewModel: ChatViewModel) {
+    val pending by viewModel.pendingNodeImport.collectAsState()
+    if (pending.isEmpty()) return
+    AlertDialog(
+        onDismissRequest = viewModel::dismissNodeImport,
+        title = { Text("Add ${if (pending.size == 1) "this server" else "${pending.size} servers"}?") },
+        text = {
+            Column {
+                Text(
+                    "Wide-range discovery will also use these bootstrap/relay nodes. Only add servers from someone you trust.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                pending.forEach {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = viewModel::confirmNodeImport) { Text("Add") } },
+        dismissButton = { TextButton(onClick = viewModel::dismissNodeImport) { Text("Cancel") } },
+    )
 }
