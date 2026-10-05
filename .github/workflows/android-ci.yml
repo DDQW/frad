@@ -2,8 +2,10 @@ name: Android CI
 
 # Runs on every branch push (not just master) so feature branches get a real
 # Android build + test run before they're merged, plus manually on demand.
+# Pushes that only touch nodes/ (the crawler's node-list updates) build nothing.
 on:
   push:
+    paths-ignore: ['nodes/**']
   pull_request:
   workflow_dispatch:
 

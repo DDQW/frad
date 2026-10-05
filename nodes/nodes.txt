@@ -1,0 +1,9 @@
+# FRAD official node list - see README.md next to this file.
+#
+# FRAD servers (p2p-go/cmd/bootstrap) the scheduled crawler (p2p-go/cmd/nodecrawl)
+# has found alive in at least 3 consecutive runs, plus the maintainers' pinned.txt.
+# Generated - don't edit by hand; change pinned.txt or banned.txt instead.
+#
+# One multiaddr per line, ending in /p2p/<peerid>; lines starting with # are
+# comments. Apps and servers treat every entry as a candidate and check it
+# themselves before relying on it.
