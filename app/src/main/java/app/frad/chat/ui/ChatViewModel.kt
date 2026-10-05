@@ -12,6 +12,9 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +34,7 @@ import app.frad.chat.contacts.Contact
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.data.MediaFileStore
+import app.frad.chat.media.MediaSanitizer
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 import app.frad.chat.safety.BlockEntry
@@ -222,24 +226,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun blockActivePeer() { activeController?.blockActivePeer() }
     fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 
-    /** Reads [uri] fully into memory (files this small are the whole point of the 25 MB cap)
-     *  and hands it to the active controller; surfaces [errorEvent] instead of sending if the
-     *  file can't be read or is over the cap. */
-    fun sendFile(uri: Uri) {
-        val resolver = getApplication<Application>().contentResolver
-        val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        if (bytes == null) {
-            _errorEvent.value = "Couldn't read that file."
-            return
-        }
-        if (bytes.size > MAX_TRANSFER_FILE_BYTES) {
-            _errorEvent.value = "That file is too large to send (max ${MAX_TRANSFER_FILE_BYTES / (1024 * 1024)} MB)."
-            return
-        }
+    /** Reads [uri], strips what photos/videos reveal beyond their content (see [MediaSanitizer]),
+     *  and hands the result to the active controller - off the main thread. [afterRead] runs once
+     *  the source has been read, so a temporary capture file can be deleted then. Surfaces
+     *  [errorEvent] instead of sending if the file can't be read or cleaned, or is over the cap. */
+    fun sendFile(uri: Uri, afterRead: () -> Unit = {}) {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
         val mimeType = resolver.getType(uri) ?: "application/octet-stream"
         val fileName = displayNameOf(resolver, uri) ?: "file"
-        activeController?.sendFile(bytes, fileName, mimeType)
+        val isMedia = mimeType.startsWith("image/") || mimeType.startsWith("video/")
+        val tooLarge = "That file is too large to send (max ${MAX_TRANSFER_FILE_BYTES / (1024 * 1024)} MB)."
+        // Media may shrink a lot once cleaned; anything else is sent as is, so check before reading it.
+        if (!isMedia && (sizeOf(resolver, uri) ?: 0L) > MAX_TRANSFER_FILE_BYTES) {
+            afterRead()
+            _errorEvent.value = tooLarge
+            return
+        }
+        viewModelScope.launch {
+            val prepared = withContext(Dispatchers.Default) {
+                runCatching { MediaSanitizer.prepare(app, uri, mimeType, fileName) }
+            }
+            afterRead()
+            val file = prepared.getOrElse {
+                _errorEvent.value = if (isMedia) {
+                    "Couldn't remove the location and other hidden data from that file, so it wasn't sent."
+                } else {
+                    "Couldn't read that file."
+                }
+                return@launch
+            }
+            if (file.bytes.size > MAX_TRANSFER_FILE_BYTES) {
+                _errorEvent.value = tooLarge
+                return@launch
+            }
+            activeController?.sendFile(file.bytes, file.fileName, file.mimeType)
+        }
     }
+
+    private fun sizeOf(resolver: ContentResolver, uri: Uri): Long? =
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (index >= 0 && cursor.moveToFirst() && !cursor.isNull(index)) cursor.getLong(index) else null
+        }
 
     private fun displayNameOf(resolver: ContentResolver, uri: Uri): String? {
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->

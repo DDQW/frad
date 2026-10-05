@@ -83,7 +83,7 @@ internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
                 onDismissError = { viewModel.consumeErrorEvent() },
                 onSend = { viewModel.sendMessage(it) },
                 onTyping = { viewModel.notifyTyping() },
-                onSendFile = { viewModel.sendFile(it) },
+                onSendFile = { uri, afterRead -> viewModel.sendFile(uri, afterRead) },
                 onLeave = { viewModel.endChat() },
                 onBlock = { viewModel.blockActivePeer() },
                 onReport = { reason -> viewModel.reportActivePeer(reason) },

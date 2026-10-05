@@ -115,7 +115,8 @@ internal fun ChatContent(
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
     onTyping: () -> Unit,
-    onSendFile: (Uri) -> Unit,
+    /** Sends the file at the uri; the callback runs once it has been read (temp files can go then). */
+    onSendFile: (Uri, () -> Unit) -> Unit,
     onLeave: () -> Unit,
     onBlock: () -> Unit,
     onReport: (reason: String) -> Unit,
@@ -128,7 +129,7 @@ internal fun ChatContent(
     var showSafetyNumber by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) onSendFile(uri)
+        if (uri != null) onSendFile(uri) {}
     }
 
     // Photo/video capture is delegated to the device's own camera app (ACTION_IMAGE_CAPTURE/
@@ -142,8 +143,7 @@ internal fun ChatContent(
         if (file != null) {
             val uri = CaptureFiles.uriFor(context, file)
             CaptureFiles.revokeAccess(context, uri)
-            if (success) onSendFile(uri)
-            file.delete()
+            if (success) onSendFile(uri) { file.delete() } else file.delete()
         }
     }
     val captureVideoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { success ->
@@ -152,8 +152,7 @@ internal fun ChatContent(
         if (file != null) {
             val uri = CaptureFiles.uriFor(context, file)
             CaptureFiles.revokeAccess(context, uri)
-            if (success) onSendFile(uri)
-            file.delete()
+            if (success) onSendFile(uri) { file.delete() } else file.delete()
         }
     }
     fun startPhotoCapture() {
@@ -204,8 +203,7 @@ internal fun ChatContent(
         recordingFile = null
         isRecordingAudio = false
         if (ok && file != null) {
-            onSendFile(CaptureFiles.uriFor(context, file))
-            file.delete()
+            onSendFile(CaptureFiles.uriFor(context, file)) { file.delete() }
         } else {
             file?.delete()
         }
