@@ -76,10 +76,13 @@ class WifiDirectTransferManager(context: Context) {
             val group = requestGroupInfo()
             onCredentialsReady(WfdCredentials(networkName = group.networkName, passphrase = group.passphrase))
 
+            // Listen on the group's own address only, not on every network the phone is in: on the
+            // ordinary Wi-Fi, anyone could otherwise connect first and take the transfer's one slot.
+            val groupAddress = runCatching { requestConnectionInfo().groupOwnerAddress }.getOrNull()
             withContext(Dispatchers.IO) {
-                ServerSocket(PORT).use { server ->
+                (if (groupAddress != null) ServerSocket(PORT, 1, groupAddress) else ServerSocket(PORT)).use { server ->
                     server.soTimeout = CONNECT_TIMEOUT_MILLIS
-                    closingOnCancel(server::close) { server.accept() }.use { socket ->
+                    closingOnCancel(server::close) { acceptFromGroup(server, groupAddress) }.use { socket ->
                         val out = socket.getOutputStream()
                         closingOnCancel(socket::close) {
                             writeChunked(fileBytes, TransferCipher(transferKey), CHUNK_SIZE, onProgress) { out.write(it) }
@@ -126,6 +129,28 @@ class WifiDirectTransferManager(context: Context) {
         } finally {
             receiver.unregister()
             withContext(NonCancellable) { runCatching { removeGroup() } }
+        }
+    }
+
+    /** The first connection from inside the group's subnet; anything else is dropped. The data
+     *  is encrypted for the peer anyway - this only keeps others from occupying the slot. */
+    private fun acceptFromGroup(server: ServerSocket, groupAddress: InetAddress?): Socket {
+        while (true) {
+            val socket = server.accept()
+            if (groupAddress == null || sameSubnet(socket.inetAddress, groupAddress)) return socket
+            runCatching { socket.close() }
+        }
+    }
+
+    private fun sameSubnet(a: InetAddress?, b: InetAddress): Boolean {
+        val x = a?.address ?: return false
+        val y = b.address
+        return x.size == 4 && y.size == 4 && x[0] == y[0] && x[1] == y[1] && x[2] == y[2]
+    }
+
+    private suspend fun requestConnectionInfo(): WifiP2pInfo = suspendCancellableCoroutine { cont ->
+        manager.requestConnectionInfo(channel) { info ->
+            if (info != null) cont.resume(info) else cont.resumeWithException(IllegalStateException("No connection info"))
         }
     }
 
