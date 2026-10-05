@@ -117,9 +117,9 @@ you have it, or ask in an issue — the summary above is the durable version.
   this end-to-end needs *both* two physical devices with internet access
   *and* an actually-running `p2p-go/cmd/bootstrap` instance reachable by
   both, neither of which this repo provides. What **is** locally verified
-  (a Go test, not a device test): DHT rendezvous and a relay-transparent
-  stream round trip both work between three in-process libp2p hosts (see
-  `p2p-go/node`'s test suite).
+  (Go tests, not device tests): DHT rendezvous and a stream round trip work
+  between in-process libp2p hosts, including over a circuit-relay v2 hop
+  when that's the only path (see `p2p-go/node`'s test suite).
 - **M5 — abuse hardening**: in progress. So far: blocking is now resilient to identity resets —
   right after the Noise handshake, both sides also exchange a hashed, per-device fingerprint
   (`safety/DeviceFingerprint.kt`, derived from `Settings.Secure.ANDROID_ID`) and `BlockList`

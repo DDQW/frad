@@ -60,7 +60,9 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
         override fun onIncomingStream(protocolId: String, peerId: String, streamHandle: String) {
             val host = goHost ?: return
             val stream = runCatching { host.acceptStream(streamHandle) }.getOrNull() ?: return
-            _incomingStreams.tryEmit(protocolId to WideRangeByteStream(stream))
+            val wrapped = WideRangeByteStream(stream)
+            // Buffer full (a burst of incoming streams): close rather than leak the stream.
+            if (!_incomingStreams.tryEmit(protocolId to wrapped)) wrapped.close()
         }
     }
 

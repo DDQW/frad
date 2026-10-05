@@ -42,6 +42,20 @@ const (
 // (e.g. no peers yet), instead of trusting its (meaningless in that case) TTL.
 const advertiseRetryInterval = 30 * time.Second
 
+const (
+	// openStreamTimeout bounds dialing + opening one stream, so a peer that's gone
+	// from the network can't leave the Kotlin side waiting indefinitely.
+	openStreamTimeout = 30 * time.Second
+	// pendingStreamTimeout is how long an incoming stream announced via
+	// IncomingStreamListener may wait for AcceptStream before it's reset, so streams
+	// the app never picks up (busy, or the Kotlin side dropped the announcement)
+	// don't pile up for the lifetime of the host.
+	pendingStreamTimeout = 30 * time.Second
+	// maxPendingStreams caps announced-but-not-yet-accepted streams; beyond it new
+	// incoming streams are reset immediately rather than held in memory.
+	maxPendingStreams = 32
+)
+
 // Config is populated by Kotlin before calling NewHost.
 type Config struct {
 	// ListenPort; 0 lets the OS assign an ephemeral port.
@@ -218,7 +232,14 @@ func (n *Host) OpenStream(peerId string, protocolId string) (*Stream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid peer id %q: %w", peerId, err)
 	}
-	s, err := n.h.NewStream(n.ctx, pid, protocol.ID(protocolId))
+	ctx, cancel := context.WithTimeout(n.ctx, openStreamTimeout)
+	defer cancel()
+	// A circuit-relay v2 connection counts as "limited" in libp2p, and NewStream
+	// refuses to use one unless explicitly allowed - without this, two peers that
+	// are both behind NAT (hole punching failed, only the relay connects them)
+	// could never open a chat at all, which is the whole point of the relay.
+	ctx = network.WithAllowLimitedConn(ctx, "frad chat over relay")
+	s, err := n.h.NewStream(ctx, pid, protocol.ID(protocolId))
 	if err != nil {
 		return nil, fmt.Errorf("opening stream to %s: %w", peerId, err)
 	}
@@ -241,15 +262,35 @@ func (n *Host) AcceptStream(streamHandle string) (*Stream, error) {
 
 func (n *Host) handleIncomingStream(protocolId string) network.StreamHandler {
 	return func(s network.Stream) {
+		if n.streamsListener == nil {
+			_ = s.Reset()
+			return
+		}
 		n.mu.Lock()
+		if len(n.pendingStreams) >= maxPendingStreams {
+			n.mu.Unlock()
+			_ = s.Reset()
+			return
+		}
 		n.nextHandle++
 		handle := fmt.Sprintf("%d", n.nextHandle)
 		n.pendingStreams[handle] = s
 		n.mu.Unlock()
 
-		if n.streamsListener != nil {
-			n.streamsListener.OnIncomingStream(protocolId, s.Conn().RemotePeer().String(), handle)
-		}
+		time.AfterFunc(pendingStreamTimeout, func() { n.dropPendingStream(handle) })
+		n.streamsListener.OnIncomingStream(protocolId, s.Conn().RemotePeer().String(), handle)
+	}
+}
+
+// dropPendingStream resets an announced stream nobody accepted; a no-op once
+// AcceptStream has taken it.
+func (n *Host) dropPendingStream(handle string) {
+	n.mu.Lock()
+	s, ok := n.pendingStreams[handle]
+	delete(n.pendingStreams, handle)
+	n.mu.Unlock()
+	if ok {
+		_ = s.Reset()
 	}
 }
 

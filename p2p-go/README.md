@@ -55,6 +55,15 @@ each device that should be able to find the other over the wide-range layer.
 multiaddr/peer id stays stable — without it, every restart would mint a new
 peer id and invalidate everyone's saved address.
 
+Relaying: libp2p's own defaults cap a relayed connection at 2 minutes and
+128 KiB per direction — enough for a hole-punching handshake, not for a chat
+or a file. This node relays each connection for up to `-relay-max-duration`
+(default `1h`) and `-relay-max-data` bytes per direction (default 64 MiB,
+room for one maximum-size 25 MB file plus the chat); `-relay-unlimited`
+lifts both. It also declares itself publicly reachable at startup: libp2p
+otherwise only enables the relay service after AutoNAT has confirmed that,
+which a small, isolated network like FRAD's may never manage.
+
 ## Building the `.aar` for the app
 
 ```bash
@@ -77,10 +86,11 @@ go vet ./...
 go test ./...
 ```
 
-`node`'s test suite includes an end-to-end smoke test (three loopback libp2p
-hosts: a mode-Server bootstrap + two mode-Auto app peers) that proves DHT
-rendezvous and a relay-transparent `OpenStream` round trip actually work —
-this is real network code, just never leaving localhost. What it does **not**
-prove: behavior across the real internet, through real NAT, or through a
-real circuit-relay v2 hop when direct dialing fails — that needs two physical
-devices and a real, publicly-reachable `cmd/bootstrap` instance.
+`node`'s test suite runs real libp2p hosts on loopback: a smoke test (a
+mode-Server bootstrap + two mode-Auto app peers) proves DHT rendezvous and an
+`OpenStream` round trip, and a relay test proves a chat stream opens when the
+*only* path between two peers is a circuit-relay v2 hop (libp2p refuses
+streams over such "limited" connections unless explicitly allowed - this test
+fails without that). What they do **not** prove: behavior across the real
+internet and through real NAT/hole punching — that needs two physical devices
+and a real, publicly-reachable `cmd/bootstrap` instance.

@@ -18,11 +18,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 
 	p2pnode "frad.local/p2p-go/node"
 )
@@ -31,7 +33,22 @@ func main() {
 	port := flag.Int("port", 4001, "TCP/QUIC listen port")
 	keyFile := flag.String("identity-key-file", "bootstrap_identity.key",
 		"path to persist this node's identity so its multiaddr/peer id stays stable across restarts")
+	// libp2p's own relay defaults (2 minutes, 128 KiB per direction) are sized for a
+	// short hole-punching handshake, not for carrying a FRAD chat - a relayed chat
+	// would drop after two minutes and a file transfer (up to 25 MB) could never
+	// finish. These defaults fit one chat session plus a maximum-size file.
+	maxDuration := flag.Duration("relay-max-duration", time.Hour,
+		"maximum lifetime of one relayed connection")
+	maxData := flag.Int64("relay-max-data", 64<<20,
+		"maximum bytes relayed per connection and direction")
+	unlimited := flag.Bool("relay-unlimited", false,
+		"relay without any per-connection time/data limit (overrides the two flags above)")
 	flag.Parse()
+
+	relayOpts := []relay.Option{relay.WithLimit(&relay.RelayLimit{Duration: *maxDuration, Data: *maxData})}
+	if *unlimited {
+		relayOpts = []relay.Option{relay.WithInfiniteLimits()}
+	}
 
 	priv, err := loadOrCreateIdentity(*keyFile)
 	if err != nil {
@@ -47,7 +64,12 @@ func main() {
 		),
 		// Runs the circuit-relay v2 SERVICE (this node relays for others),
 		// unlike node.Host's client-only libp2p.EnableRelay().
-		libp2p.EnableRelayService(),
+		libp2p.EnableRelayService(relayOpts...),
+		// libp2p only switches the relay service on once AutoNAT has confirmed this node
+		// is publicly reachable - which needs enough other peers to dial back, something
+		// FRAD's small isolated network may never have. This binary is meant to run on a
+		// public address (see the README), so assert that up front instead.
+		libp2p.ForceReachabilityPublic(),
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "host error:", err)
