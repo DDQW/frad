@@ -53,8 +53,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 37
-        versionName = "0.3.33"
+        versionCode = 38
+        versionName = "0.3.34"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -153,6 +153,10 @@ dependencies {
     // instead of depending on platform JCA algorithm availability, which
     // varies by Android version/OEM.
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // QR codes for frad:// links (servers to share) - encoding only; scanning is left to
+    // whatever camera app the other phone has.
+    implementation("com.google.zxing:core:3.5.4")
 
     // M4 wide-range layer: only present once `./gradlew gomobileBind` has produced
     // p2p-go/build/p2pgo.aar (see the comment above the `android {}` block).

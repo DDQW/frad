@@ -107,6 +107,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val transferStatus: StateFlow<String?> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.transferStatus ?: flowOf(null) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val transferProgress: StateFlow<Float?> = _mode.flatMapLatest { mode ->
+        controllerFlow(mode).flatMapLatest { it?.transferProgress ?: flowOf(null) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     /** One-off messages from whichever layer is active - see [ChatController.notices]. */
     val notices: Flow<String> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.notices ?: emptyFlow() }
@@ -278,6 +281,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun endChat() { activeController?.endActiveConnection("you left") }
     fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
     fun answerIncomingFile(accept: Boolean) { activeController?.answerIncomingFile(accept) }
+    fun cancelTransfer() { activeController?.cancelTransfer() }
     fun blockActivePeer() { activeController?.blockActivePeer() }
     fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 

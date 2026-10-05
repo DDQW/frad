@@ -54,4 +54,28 @@ class ChunkedTransferTest {
             runBlocking { readChunked(1L, TransferCipher(randomKey()), readExactly = { pipe.readExactly(it) }) }
         }
     }
+
+    @Test
+    fun `more data than announced is rejected`() {
+        val key = randomKey()
+        val pipe = FakePipe()
+        runBlocking { writeChunked(ByteArray(1000), TransferCipher(key), write = { pipe.write(it) }) }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { readChunked(10L, TransferCipher(key), readExactly = { pipe.readExactly(it) }) }
+        }
+    }
+
+    @Test
+    fun `progress is reported per chunk on both sides`() = runBlocking<Unit> {
+        val key = randomKey()
+        val pipe = FakePipe()
+        val sent = mutableListOf<Long>()
+        val received = mutableListOf<Long>()
+        writeChunked(ByteArray(250), TransferCipher(key), chunkSize = 100, onProgress = { sent += it }, write = { pipe.write(it) })
+        readChunked(250L, TransferCipher(key), onProgress = { received += it }, readExactly = { pipe.readExactly(it) })
+
+        org.junit.Assert.assertEquals(listOf(100L, 200L, 250L), sent)
+        org.junit.Assert.assertEquals(listOf(100L, 200L, 250L), received)
+    }
 }

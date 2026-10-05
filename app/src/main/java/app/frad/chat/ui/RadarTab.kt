@@ -65,6 +65,7 @@ internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
         is ChatUiState.Chatting -> {
             var saved by remember(current.remotePeerId) { mutableStateOf(viewModel.isContactSaved(current.remotePeerId)) }
             val transferStatus by viewModel.transferStatus.collectAsState()
+            val transferProgress by viewModel.transferProgress.collectAsState()
             val errorEvent by viewModel.errorEvent.collectAsState()
             ChatContent(
                 remotePeerId = current.remotePeerId,
@@ -79,6 +80,8 @@ internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
                 alreadySaved = saved,
                 fileTransferAvailable = viewModel.fileTransferAvailable,
                 transferStatus = transferStatus,
+                transferProgress = transferProgress,
+                onCancelTransfer = { viewModel.cancelTransfer() },
                 incomingFile = current.incomingFile,
                 onAnswerIncomingFile = { viewModel.answerIncomingFile(it) },
                 errorMessage = errorEvent,

@@ -30,6 +30,7 @@ import app.frad.chat.ble.MAX_FRAME_BYTES
 import app.frad.chat.chat.ChatConnection
 import app.frad.chat.chat.ChatController
 import app.frad.chat.chat.ChatEnvelope
+import app.frad.chat.chat.closingOnCancel
 import app.frad.chat.chat.ChatEvent
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
@@ -108,6 +109,8 @@ class WideRangeChatController(
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
+    private val _transferProgress = MutableStateFlow<Float?>(null)
+    override val transferProgress: StateFlow<Float?> = _transferProgress.asStateFlow()
 
     override val fileTransferAvailable: Boolean get() = WideRangeNode.isSupported
 
@@ -399,25 +402,64 @@ class WideRangeChatController(
             val link = activeLink ?: return@launch
             val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
             if (_transferStatus.value != null) return@launch
-
-            val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
-            if (!askToSend(link, offer)) return@launch
-            val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
-            _transferStatus.value = "Sending $fileName…"
-            val result = runCatching {
-                val transferStream = node.openStream(link.stream.remotePeerId, TRANSFER_PROTOCOL_ID).getOrThrow()
-                try {
-                    link.chat.send(ChatEnvelope.WideOffer(offer))
-                    writeChunked(bytes, TransferCipher(transferKey)) { transferStream.write(it).getOrThrow() }
-                } finally {
-                    transferStream.close()
+            val job = coroutineContext[Job]
+            transferJob = job
+            try {
+                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+                if (!askToSend(link, offer)) return@launch
+                val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
+                _transferStatus.value = "Sending $fileName…"
+                val sent = try {
+                    val transferStream = node.openStream(link.stream.remotePeerId, TRANSFER_PROTOCOL_ID).getOrThrow()
+                    try {
+                        closingOnCancel(transferStream::close) {
+                            link.chat.send(ChatEnvelope.WideOffer(offer))
+                            writeChunked(bytes, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
+                                transferStream.write(it).getOrThrow()
+                            }
+                        }
+                    } finally {
+                        transferStream.close()
+                    }
+                    true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "sending file failed", e)
+                    false
                 }
+                if (sent) {
+                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+                } else if (activeLink === link) {
+                    _notices.tryEmit("$fileName couldn't be sent.")
+                }
+            } finally {
+                transferEnded(job)
             }
-            _transferStatus.value = null
-            result.onSuccess {
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
-            }
+        }
+    }
+
+    /** The running file transfer (or request for one), for [cancelTransfer]. */
+    private var transferJob: Job? = null
+
+    private fun progressOf(total: Long): (Long) -> Unit = { done ->
+        _transferProgress.value = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else null
+    }
+
+    private fun transferEnded(job: Job?) {
+        if (transferJob !== job) return
+        transferJob = null
+        _transferStatus.value = null
+        _transferProgress.value = null
+    }
+
+    override fun cancelTransfer() {
+        scope.launch {
+            val job = transferJob ?: return@launch
+            transferEnded(job)
+            job.cancel()
+            _notices.tryEmit("Transfer cancelled.")
         }
     }
 
@@ -459,15 +501,31 @@ class WideRangeChatController(
         }
         val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
         _transferStatus.value = "Receiving ${offer.fileName}…"
-        scope.launch {
-            val result = runCatching {
-                readChunked(offer.sizeBytes, TransferCipher(transferKey)) { stream.readExactly(it).getOrThrow() }
-            }
-            stream.close()
-            _transferStatus.value = null
-            result.onSuccess { bytes ->
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+        transferJob = scope.launch {
+            val job = coroutineContext[Job]
+            try {
+                val bytes = try {
+                    closingOnCancel(stream::close) {
+                        readChunked(offer.sizeBytes, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
+                            stream.readExactly(it).getOrThrow()
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "receiving file failed", e)
+                    null
+                } finally {
+                    stream.close()
+                }
+                if (bytes != null) {
+                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+                } else if (activeLink === link) {
+                    _notices.tryEmit("${offer.fileName} couldn't be received.")
+                }
+            } finally {
+                transferEnded(job)
             }
         }
     }
@@ -497,6 +555,7 @@ class WideRangeChatController(
 
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
+        transferJob?.let { job -> transferEnded(job); job.cancel() }
         openChat.end()
         activeLink?.let { link ->
             link.earlyTransferStreamTimeout?.cancel()

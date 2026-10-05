@@ -5,10 +5,13 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,12 +48,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import app.frad.chat.AppLock
+import app.frad.chat.qr.QrCode
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 import app.frad.chat.profile.ProfilePhoto
@@ -60,6 +66,8 @@ import app.frad.chat.wideradius.Geohash
 private val RADIUS_PRESETS = listOf(20.0 to "Neighborhood", 75.0 to "City", 600.0 to "Region", 20_000.0 to "Worldwide")
 private val RETENTION_PRESETS = listOf(0 to "Keep", 1 to "1 day", 7 to "1 week", 30 to "1 month")
 
+// FlowRow: chip and button rows wrap on narrow screens or with large system fonts.
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ProfileTab(viewModel: ChatViewModel) {
     var draft by remember { mutableStateOf(viewModel.myPseudonym) }
@@ -77,6 +85,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var appLock by remember { mutableStateOf(viewModel.appLock) }
     var retentionDays by remember { mutableStateOf(viewModel.historyRetentionDays) }
     var confirmWipe by remember { mutableStateOf(false) }
+    var showNodeQr by remember { mutableStateOf(false) }
     var locationDenied by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -295,7 +304,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             Spacer(Modifier.height(16.dp))
             Text("Search radius: ${RADIUS_PRESETS.firstOrNull { it.first == radiusKm }?.second ?: "${radiusKm.toInt()} km"}")
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RADIUS_PRESETS.forEach { (km, label) ->
                     FilterChip(
                         selected = km == radiusKm,
@@ -321,7 +330,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 label = { Text("Bootstrap/relay multiaddrs") },
             )
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { viewModel.bootstrapNodes = bootstrapDraft.lines().map { it.trim() }.filter { it.isNotEmpty() } }) {
                     Text("Save nodes")
                 }
@@ -333,9 +342,11 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                         context.startActivity(Intent.createChooser(send, "Share servers"))
                     },
                 ) { Text("Share servers") }
+                OutlinedButton(enabled = shareLink != null && savedNodes.isNotEmpty(), onClick = { showNodeQr = true }) { Text("QR code") }
             }
             Text(
-                "Sharing sends a frad://node link - whoever opens it with FRAD is asked whether to add these nodes.",
+                "Sharing sends a frad://node link, the QR code shows the same link for another phone's camera - " +
+                    "whoever opens it with FRAD is asked whether to add these nodes.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -387,7 +398,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RETENTION_PRESETS.forEach { (days, label) ->
                     FilterChip(
                         selected = days == retentionDays,
@@ -413,6 +424,35 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 ),
             ) { Text("Delete everything") }
         }
+    }
+
+    if (showNodeQr) {
+        val link = viewModel.nodeShareLink()
+        val qr = remember(link) { link?.let { runCatching { qrBitmap(QrCode.encode(it)).asImageBitmap() }.getOrNull() } }
+        AlertDialog(
+            onDismissRequest = { showNodeQr = false },
+            title = { Text("Your servers") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr,
+                            contentDescription = "QR code with your server addresses",
+                            filterQuality = FilterQuality.None,
+                            modifier = Modifier.size(240.dp),
+                        )
+                    } else {
+                        Text("Too many servers to fit in a QR code - use Share instead.")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Scan with the camera of the other phone; it opens FRAD and asks before adding them.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showNodeQr = false }) { Text("Close") } },
+        )
     }
 
     if (confirmWipe) {

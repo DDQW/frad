@@ -114,6 +114,9 @@ internal fun ChatContent(
     alreadySaved: Boolean,
     fileTransferAvailable: Boolean,
     transferStatus: String?,
+    /** 0..1 once known; null shows an indeterminate bar. */
+    transferProgress: Float?,
+    onCancelTransfer: () -> Unit,
     /** The peer asks to send this; [onAnswerIncomingFile] says yes or no. */
     incomingFile: FileOffer?,
     onAnswerIncomingFile: (accept: Boolean) -> Unit,
@@ -329,8 +332,19 @@ internal fun ChatContent(
         }
         if (transferStatus != null) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-                Text(transferStatus, style = MaterialTheme.typography.bodySmall)
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        transferStatus + (transferProgress?.let { "  ${(it * 100).toInt()} %" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onCancelTransfer) { Text("Cancel") }
+                }
+                if (transferProgress != null) {
+                    LinearProgressIndicator(progress = { transferProgress }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
         }
         if (errorMessage != null) {

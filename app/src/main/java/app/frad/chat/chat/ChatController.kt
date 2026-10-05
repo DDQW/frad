@@ -16,6 +16,9 @@ interface ChatController {
      *  "Chat with someone nearby" did nothing. */
     val notices: SharedFlow<String>
     val transferStatus: StateFlow<String?>
+
+    /** 0..1 while a file is being transferred, null while that isn't known (or nothing runs). */
+    val transferProgress: StateFlow<Float?>
     val fileTransferAvailable: Boolean
 
     fun setBrowsing(enabled: Boolean)
@@ -29,6 +32,9 @@ interface ChatController {
 
     /** The user's answer to [ChatUiState.Chatting.incomingFile]. */
     fun answerIncomingFile(accept: Boolean)
+
+    /** Stops the file transfer - or the request for one - that [transferStatus] describes. */
+    fun cancelTransfer()
     fun endActiveConnection(reason: String)
     fun blockActivePeer()
     fun reportActivePeer(reason: String)

@@ -32,3 +32,11 @@ internal fun pixelated(bitmap: Bitmap, width: Int = 12): Bitmap {
     val height = (bitmap.height * width / bitmap.width.coerceAtLeast(1)).coerceAtLeast(1)
     return Bitmap.createScaledBitmap(bitmap, width, height, true)
 }
+
+/** One pixel per module - draw it scaled up with FilterQuality.None so the edges stay sharp. */
+internal fun qrBitmap(code: app.frad.chat.qr.QrCode): Bitmap {
+    val pixels = IntArray(code.size * code.size) { i ->
+        if (code[i % code.size, i / code.size]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+    }
+    return Bitmap.createBitmap(pixels, code.size, code.size, Bitmap.Config.ARGB_8888)
+}

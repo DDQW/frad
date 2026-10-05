@@ -108,6 +108,8 @@ class BleChatController(
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
+    private val _transferProgress = MutableStateFlow<Float?>(null)
+    override val transferProgress: StateFlow<Float?> = _transferProgress.asStateFlow()
 
     override val fileTransferAvailable: Boolean get() = transferManager != null
 
@@ -372,19 +374,48 @@ class BleChatController(
             val link = activeLink() ?: return@launch
             val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
             if (_transferStatus.value != null) return@launch
+            val job = coroutineContext[Job]
+            transferJob = job
+            try {
+                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+                if (!askToSend(link, offer)) return@launch
+                val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
+                _transferStatus.value = "Sending $fileName…"
+                val result = manager.hostAndSendFile(bytes, transferKey, onProgress = progressOf(offer.sizeBytes)) { credentials ->
+                    link.chat.send(ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase))
+                }
+                result.onSuccess {
+                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+                }.onFailure {
+                    if (activeLink() === link) _notices.tryEmit("$fileName couldn't be sent.")
+                }
+            } finally {
+                transferEnded(job)
+            }
+        }
+    }
 
-            val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
-            if (!askToSend(link, offer)) return@launch
-            val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
-            _transferStatus.value = "Sending $fileName…"
-            val result = manager.hostAndSendFile(bytes, transferKey) { credentials ->
-                link.chat.send(ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase))
-            }
-            _transferStatus.value = null
-            result.onSuccess {
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
-            }
+    /** The running file transfer (or request for one), for [cancelTransfer]. */
+    private var transferJob: Job? = null
+
+    private fun progressOf(total: Long): (Long) -> Unit = { done ->
+        _transferProgress.value = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else null
+    }
+
+    private fun transferEnded(job: Job?) {
+        if (transferJob !== job) return
+        transferJob = null
+        _transferStatus.value = null
+        _transferProgress.value = null
+    }
+
+    override fun cancelTransfer() {
+        scope.launch {
+            val job = transferJob ?: return@launch
+            transferEnded(job)
+            job.cancel()
+            _notices.tryEmit("Transfer cancelled.")
         }
     }
 
@@ -431,12 +462,18 @@ class BleChatController(
         val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
         val credentials = WfdCredentials(networkName = envelope.networkName, passphrase = envelope.passphrase)
         _transferStatus.value = "Receiving ${offer.fileName}…"
-        scope.launch {
-            val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes)
-            _transferStatus.value = null
-            result.onSuccess { bytes ->
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+        transferJob = scope.launch {
+            val job = coroutineContext[Job]
+            try {
+                val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes, onProgress = progressOf(offer.sizeBytes))
+                result.onSuccess { bytes ->
+                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+                }.onFailure {
+                    if (activeLink() === link) _notices.tryEmit("${offer.fileName} couldn't be received.")
+                }
+            } finally {
+                transferEnded(job)
             }
         }
     }
@@ -466,6 +503,7 @@ class BleChatController(
 
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
+        transferJob?.let { job -> transferEnded(job); job.cancel() }
         openChat.end()
         forgetMediaUnlessSaved(activeLink()?.chat?.remotePeer?.peerId)
         disarmConnectionTimeout()
