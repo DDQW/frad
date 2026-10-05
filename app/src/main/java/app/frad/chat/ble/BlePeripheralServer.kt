@@ -54,82 +54,97 @@ class BlePeripheralServer(
     private val pendingNotifications = mutableMapOf<String, ArrayDeque<ByteArray>>()
     private val notifyInFlight = mutableMapOf<String, Boolean>()
 
+    // GATT server callbacks land on binder threads while the controller calls in from its own
+    // dispatcher; all the maps above (and [gattServer]/[advertiser]) are only touched under this
+    // lock. Listener callbacks may be invoked while holding it - they just hand off to the
+    // controller's dispatcher.
+    private val lock = Any()
+
     /** @param sessionId a short-lived, rotating id — see [app.frad.chat.pairing]. */
     fun start(sessionId: ByteArray) {
-        require(sessionId.size <= GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
+        synchronized(lock) {
+            require(sessionId.size <= GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
 
-        gattServer = bluetoothManager.openGattServer(context, gattServerCallback)?.also { server ->
-            val service = BluetoothGattService(GattProfile.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+            gattServer = bluetoothManager.openGattServer(context, gattServerCallback)?.also { server ->
+                val service = BluetoothGattService(GattProfile.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
-            val inbox = BluetoothGattCharacteristic(
-                GattProfile.INBOX_CHARACTERISTIC_UUID,
-                BluetoothGattCharacteristic.PROPERTY_WRITE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE,
-            )
+                val inbox = BluetoothGattCharacteristic(
+                    GattProfile.INBOX_CHARACTERISTIC_UUID,
+                    BluetoothGattCharacteristic.PROPERTY_WRITE,
+                    BluetoothGattCharacteristic.PERMISSION_WRITE,
+                )
 
-            val outbox = BluetoothGattCharacteristic(
-                GattProfile.OUTBOX_CHARACTERISTIC_UUID,
-                BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-                BluetoothGattCharacteristic.PERMISSION_READ,
-            )
-            outbox.addDescriptor(
-                BluetoothGattDescriptor(
-                    GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID,
-                    BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ,
-                ),
-            )
+                val outbox = BluetoothGattCharacteristic(
+                    GattProfile.OUTBOX_CHARACTERISTIC_UUID,
+                    BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                    BluetoothGattCharacteristic.PERMISSION_READ,
+                )
+                outbox.addDescriptor(
+                    BluetoothGattDescriptor(
+                        GattProfile.CLIENT_CHARACTERISTIC_CONFIG_UUID,
+                        BluetoothGattDescriptor.PERMISSION_WRITE or BluetoothGattDescriptor.PERMISSION_READ,
+                    ),
+                )
 
-            service.addCharacteristic(inbox)
-            service.addCharacteristic(outbox)
-            server.addService(service)
+                service.addCharacteristic(inbox)
+                service.addCharacteristic(outbox)
+                server.addService(service)
+            }
+
+            advertiser = adapter?.bluetoothLeAdvertiser
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                .setConnectable(true)
+                .build()
+            val advertiseData = AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .addServiceUuid(ParcelUuid(GattProfile.SERVICE_UUID))
+                .build()
+            // The session id rides in the scan-response packet: a 128-bit service UUID
+            // already consumes most of the 31-byte legacy advertisement budget.
+            val scanResponse = AdvertiseData.Builder()
+                .addServiceData(ParcelUuid(GattProfile.SERVICE_UUID), sessionId)
+                .build()
+
+            advertiser?.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
         }
-
-        advertiser = adapter?.bluetoothLeAdvertiser
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .setConnectable(true)
-            .build()
-        val advertiseData = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .addServiceUuid(ParcelUuid(GattProfile.SERVICE_UUID))
-            .build()
-        // The session id rides in the scan-response packet: a 128-bit service UUID
-        // already consumes most of the 31-byte legacy advertisement budget.
-        val scanResponse = AdvertiseData.Builder()
-            .addServiceData(ParcelUuid(GattProfile.SERVICE_UUID), sessionId)
-            .build()
-
-        advertiser?.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
     }
 
     /** Forcibly ends a connection from the peripheral side, e.g. because the app is
      *  already busy with another chat or just handshook with a blocked peer. */
     fun disconnectDevice(deviceAddress: String) {
-        val device = devicesByAddress[deviceAddress] ?: return
-        gattServer?.cancelConnection(device)
+        synchronized(lock) {
+            val device = devicesByAddress[deviceAddress] ?: return
+            gattServer?.cancelConnection(device)
+        }
     }
 
     fun stop() {
-        advertiser?.stopAdvertising(advertiseCallback)
-        advertiser = null
-        gattServer?.close()
-        gattServer = null
-        reassemblers.clear()
-        devicesByAddress.clear()
-        pendingNotifications.clear()
-        notifyInFlight.clear()
+        synchronized(lock) {
+            advertiser?.stopAdvertising(advertiseCallback)
+            advertiser = null
+            gattServer?.close()
+            gattServer = null
+            reassemblers.clear()
+            devicesByAddress.clear()
+            pendingNotifications.clear()
+            notifyInFlight.clear()
+        }
     }
 
     fun sendFrame(deviceAddress: String, message: ByteArray) {
-        // See BleCentralClient.DeviceConnection.fragmentSize for why MTU is never negotiated up
-        // from this default - a central talking to this peripheral is always another FRAD
-        // instance, so it never requests a larger MTU either.
-        val queue = pendingNotifications.getOrPut(deviceAddress) { ArrayDeque() }
-        for (fragment in FrameWriter.split(message, GattProfile.LEGACY_FRAGMENT_SIZE)) queue.add(fragment)
-        pumpNotifyQueue(deviceAddress)
+        synchronized(lock) {
+            // See BleCentralClient.DeviceConnection.fragmentSize for why MTU is never negotiated up
+            // from this default - a central talking to this peripheral is always another FRAD
+            // instance, so it never requests a larger MTU either.
+            val queue = pendingNotifications.getOrPut(deviceAddress) { ArrayDeque() }
+            for (fragment in FrameWriter.split(message, GattProfile.LEGACY_FRAGMENT_SIZE)) queue.add(fragment)
+            pumpNotifyQueue(deviceAddress)
+        }
     }
 
+    /** Caller holds [lock]. */
     private fun pumpNotifyQueue(deviceAddress: String) {
         if (notifyInFlight[deviceAddress] == true) return
         val server = gattServer ?: return
@@ -153,30 +168,34 @@ class BlePeripheralServer(
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            Log.d(TAG, "onConnectionStateChange addr=${device.address} status=$status newState=$newState")
-            if (newState == BluetoothGatt.STATE_CONNECTED) {
-                devicesByAddress[device.address] = device
-                reassemblers[device.address] = FrameReassembler()
-                listener.onCentralConnected(device.address)
-            } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
-                devicesByAddress.remove(device.address)
-                reassemblers.remove(device.address)
-                pendingNotifications.remove(device.address)
-                notifyInFlight.remove(device.address)
-                listener.onCentralDisconnected(device.address)
+            synchronized(lock) {
+                Log.d(TAG, "onConnectionStateChange addr=${device.address} status=$status newState=$newState")
+                if (newState == BluetoothGatt.STATE_CONNECTED) {
+                    devicesByAddress[device.address] = device
+                    reassemblers[device.address] = FrameReassembler()
+                    listener.onCentralConnected(device.address)
+                } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
+                    devicesByAddress.remove(device.address)
+                    reassemblers.remove(device.address)
+                    pendingNotifications.remove(device.address)
+                    notifyInFlight.remove(device.address)
+                    listener.onCentralDisconnected(device.address)
+                }
             }
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            notifyInFlight[device.address] = false
-            if (status != android.bluetooth.BluetoothGatt.GATT_SUCCESS) {
-                // Same reasoning as the central side's onCharacteristicWrite: a dropped
-                // fragment would otherwise desync the peer's FrameReassembler forever, so
-                // disconnect cleanly instead of pumping the next fragment regardless.
-                gattServer?.cancelConnection(device)
-                return
+            synchronized(lock) {
+                notifyInFlight[device.address] = false
+                if (status != android.bluetooth.BluetoothGatt.GATT_SUCCESS) {
+                    // Same reasoning as the central side's onCharacteristicWrite: a dropped
+                    // fragment would otherwise desync the peer's FrameReassembler forever, so
+                    // disconnect cleanly instead of pumping the next fragment regardless.
+                    gattServer?.cancelConnection(device)
+                    return
+                }
+                pumpNotifyQueue(device.address)
             }
-            pumpNotifyQueue(device.address)
         }
 
         override fun onCharacteristicWriteRequest(
@@ -188,29 +207,31 @@ class BlePeripheralServer(
             offset: Int,
             value: ByteArray,
         ) {
-            var frameTooLarge = false
-            try {
-                if (characteristic.uuid == GattProfile.INBOX_CHARACTERISTIC_UUID) {
-                    Log.d(TAG, "onCharacteristicWriteRequest addr=${device.address} bytes=${value.size}")
-                    val complete = try {
-                        reassemblers.getOrPut(device.address) { FrameReassembler() }.offer(value)
-                    } catch (e: FrameTooLargeException) {
-                        Log.w(TAG, "dropping ${device.address}: ${e.message}")
-                        frameTooLarge = true
-                        null
+            synchronized(lock) {
+                var frameTooLarge = false
+                try {
+                    if (characteristic.uuid == GattProfile.INBOX_CHARACTERISTIC_UUID) {
+                        Log.d(TAG, "onCharacteristicWriteRequest addr=${device.address} bytes=${value.size}")
+                        val complete = try {
+                            reassemblers.getOrPut(device.address) { FrameReassembler() }.offer(value)
+                        } catch (e: FrameTooLargeException) {
+                            Log.w(TAG, "dropping ${device.address}: ${e.message}")
+                            frameTooLarge = true
+                            null
+                        }
+                        if (complete != null) {
+                            listener.onFrameReceived(device.address, complete)
+                        }
                     }
-                    if (complete != null) {
-                        listener.onFrameReceived(device.address, complete)
+                } finally {
+                    // Always answer the write, even if handling it failed - otherwise the central's
+                    // GATT queue stalls on it instead of seeing a clean disconnect.
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, null)
                     }
                 }
-            } finally {
-                // Always answer the write, even if handling it failed - otherwise the central's
-                // GATT queue stalls on it instead of seeing a clean disconnect.
-                if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, null)
-                }
+                if (frameTooLarge) gattServer?.cancelConnection(device)
             }
-            if (frameTooLarge) gattServer?.cancelConnection(device)
         }
 
         override fun onDescriptorWriteRequest(

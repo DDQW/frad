@@ -1,7 +1,7 @@
 package app.frad.chat.profile
 
 import android.content.Context
-import android.util.Base64
+import java.util.Base64
 import org.json.JSONObject
 
 /** What a peer's profile looks like once decoded on the other end of a chat - see
@@ -36,7 +36,9 @@ object ProfileEnvelope {
             .put(KEY_GENDER, profile.gender.name)
             .put(KEY_BIO, profile.bio)
         profile.age?.let { json.put(KEY_AGE, it) }
-        ProfilePhoto.bytesOrNull(context)?.let { json.put(KEY_PHOTO, Base64.encodeToString(it, Base64.NO_WRAP)) }
+        // java.util.Base64 (API 26+, same unwrapped standard alphabet android.util.Base64.NO_WRAP
+        // produced before) rather than android.util.Base64, so this also runs in JVM unit tests.
+        ProfilePhoto.bytesOrNull(context)?.let { json.put(KEY_PHOTO, Base64.getEncoder().encodeToString(it)) }
         return json.toString()
     }
 
@@ -46,7 +48,7 @@ object ProfileEnvelope {
         val obj = JSONObject(json)
         val gender = runCatching { Gender.valueOf(obj.optString(KEY_GENDER)) }.getOrDefault(Gender.MALE)
         val age = if (obj.has(KEY_AGE)) obj.optInt(KEY_AGE).takeIf { it in Profile.MIN_AGE..Profile.MAX_AGE } else null
-        val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
+        val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
         return RemoteProfile(
             pseudonym = obj.optString(KEY_PSEUDONYM, "Guest"),
             gender = gender,
