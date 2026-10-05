@@ -25,18 +25,24 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.DropdownMenu
@@ -48,14 +54,16 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,14 +72,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MessageKind
@@ -80,6 +87,15 @@ import app.frad.chat.media.CaptureFiles
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 import app.frad.chat.ui.theme.fradExtraColors
+import java.io.File
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ChatContent(
@@ -90,19 +106,26 @@ internal fun ChatContent(
     remoteBio: String,
     remotePhoto: ByteArray?,
     messages: List<ChatMessage>,
+    peerTyping: Boolean,
+    safetyNumber: String,
     alreadySaved: Boolean,
     fileTransferAvailable: Boolean,
     transferStatus: String?,
     errorMessage: String?,
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
+    onTyping: () -> Unit,
     onSendFile: (Uri) -> Unit,
     onLeave: () -> Unit,
     onBlock: () -> Unit,
-    onReport: () -> Unit,
+    onReport: (reason: String) -> Unit,
     onSaveContact: () -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var confirmBlock by remember { mutableStateOf(false) }
+    var reportDialog by remember { mutableStateOf(false) }
+    var showSafetyNumber by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onSendFile(uri)
@@ -203,10 +226,32 @@ internal fun ChatContent(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            genderAgeLine(remoteGender, remoteAge),
+                            if (peerTyping) "typing…" else genderAgeLine(remoteGender, remoteAge),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (peerTyping) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    Box {
+                        IconButton(onClick = { showMoreMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Verify safety number") },
+                                leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null) },
+                                onClick = { showMoreMenu = false; showSafetyNumber = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Block…") },
+                                leadingIcon = { Icon(Icons.Default.Block, contentDescription = null) },
+                                onClick = { showMoreMenu = false; confirmBlock = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Report…") },
+                                leadingIcon = { Icon(Icons.Default.Report, contentDescription = null) },
+                                onClick = { showMoreMenu = false; reportDialog = true },
+                            )
+                        }
                     }
                     IconButton(onClick = onLeave) {
                         Icon(Icons.Default.Close, contentDescription = "Leave chat")
@@ -227,15 +272,9 @@ internal fun ChatContent(
                         },
                     )
                     AssistChip(
-                        onClick = onBlock,
+                        onClick = { confirmBlock = true },
                         label = { Text("Block") },
                         leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        colors = AssistChipDefaults.assistChipColors(labelColor = MaterialTheme.colorScheme.error, leadingIconContentColor = MaterialTheme.colorScheme.error),
-                    )
-                    AssistChip(
-                        onClick = onReport,
-                        label = { Text("Report") },
-                        leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, modifier = Modifier.size(18.dp)) },
                         colors = AssistChipDefaults.assistChipColors(labelColor = MaterialTheme.colorScheme.error, leadingIconContentColor = MaterialTheme.colorScheme.error),
                     )
                 }
@@ -244,6 +283,37 @@ internal fun ChatContent(
         HorizontalDivider()
 
         MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth())
+
+        if (confirmBlock) {
+            AlertDialog(
+                onDismissRequest = { confirmBlock = false },
+                title = { Text("Block ${Profile.displayName(remotePseudonym, remotePeerId)}?") },
+                text = { Text("This ends the chat. You won't be matched with this person again, even if they reset the app.") },
+                confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text("Block") } },
+                dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("Cancel") } },
+            )
+        }
+        if (reportDialog) {
+            ReportDialog(onDismiss = { reportDialog = false }, onReport = { reason -> reportDialog = false; onReport(reason) })
+        }
+        if (showSafetyNumber) {
+            AlertDialog(
+                onDismissRequest = { showSafetyNumber = false },
+                title = { Text("Safety number") },
+                text = {
+                    Column {
+                        Text(
+                            "Compare this number with the one on ${remotePseudonym}'s phone - in person or over another " +
+                                "channel. If they match, nobody is listening in between you.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(safetyNumber, style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Monospace)
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showSafetyNumber = false }) { Text("Close") } },
+            )
+        }
 
         if (transferStatus != null) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -325,21 +395,36 @@ internal fun ChatContent(
                             Icon(Icons.Default.Send, contentDescription = "Send voice message")
                         }
                     } else {
+                        // Only shown close to the limit, so it doesn't take up room the rest of the time.
+                        val lengthCounter: (@Composable () -> Unit)? =
+                            if (draft.length > MAX_MESSAGE_CHARS * 9 / 10) {
+                                { Text("${draft.length}/$MAX_MESSAGE_CHARS") }
+                            } else {
+                                null
+                            }
+                        val sendDraft = {
+                            if (draft.isNotBlank()) {
+                                onSend(draft)
+                                draft = ""
+                            }
+                        }
                         OutlinedTextField(
                             value = draft,
-                            onValueChange = { draft = it.take(MAX_MESSAGE_CHARS) },
+                            onValueChange = { new ->
+                                if (new.length > draft.length) onTyping()
+                                draft = new.take(MAX_MESSAGE_CHARS)
+                            },
                             modifier = Modifier.weight(1f),
                             placeholder = { Text("Message") },
                             shape = RoundedCornerShape(24.dp),
+                            maxLines = 5,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { sendDraft() }),
+                            supportingText = lengthCounter,
                         )
                         Spacer(Modifier.width(4.dp))
                         IconButton(
-                            onClick = {
-                                if (draft.isNotBlank()) {
-                                    onSend(draft)
-                                    draft = ""
-                                }
-                            },
+                            onClick = sendDraft,
                             colors = IconButtonDefaults.filledIconButtonColors(),
                         ) {
                             Icon(Icons.Default.Send, contentDescription = "Send")
@@ -359,16 +444,101 @@ internal fun ChatContent(
     }
 }
 
+/** The transcript, newest at the bottom: opens scrolled to the latest message and follows new
+ *  ones as long as the user is already at the bottom (or sent the message themselves), with a
+ *  date line wherever the day changes. */
 @Composable
 internal fun MessageList(messages: List<ChatMessage>, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    LazyColumn(modifier = modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(messages) { message ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromMe) Arrangement.End else Arrangement.Start) {
-                MessageBubble(message = message, onOpenFile = { openFile(context, message) })
+    val listState = rememberLazyListState()
+    val transcript = remember(messages) { withDayLines(messages) }
+
+    LaunchedEffect(Unit) {
+        if (transcript.isNotEmpty()) listState.scrollToItem(transcript.lastIndex)
+    }
+    LaunchedEffect(transcript.size) {
+        if (transcript.isEmpty()) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+        val atBottom = lastVisible >= transcript.lastIndex - 2
+        val mine = (transcript.last() as? TranscriptItem.Message)?.message?.fromMe == true
+        if (atBottom || mine) listState.animateScrollToItem(transcript.lastIndex)
+    }
+
+    LazyColumn(state = listState, modifier = modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(transcript) { item ->
+            when (item) {
+                is TranscriptItem.Day -> Text(
+                    item.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
+                is TranscriptItem.Message -> Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (item.message.fromMe) Arrangement.End else Arrangement.Start,
+                ) {
+                    MessageBubble(message = item.message, onOpenFile = { openFile(context, item.message) })
+                }
             }
         }
     }
+}
+
+private sealed interface TranscriptItem {
+    data class Day(val label: String) : TranscriptItem
+    data class Message(val message: ChatMessage) : TranscriptItem
+}
+
+private fun withDayLines(messages: List<ChatMessage>): List<TranscriptItem> {
+    val zone = ZoneId.systemDefault()
+    val dateFormat = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
+    val result = mutableListOf<TranscriptItem>()
+    var lastDay: LocalDate? = null
+    for (message in messages) {
+        val day = Instant.ofEpochMilli(message.atMillis).atZone(zone).toLocalDate()
+        if (day != lastDay) {
+            result += TranscriptItem.Day(dateFormat.format(day))
+            lastDay = day
+        }
+        result += TranscriptItem.Message(message)
+    }
+    return result
+}
+
+private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+
+private fun timeOf(message: ChatMessage): String =
+    timeFormat.format(Instant.ofEpochMilli(message.atMillis).atZone(ZoneId.systemDefault()))
+
+@Composable
+private fun ReportDialog(onDismiss: () -> Unit, onReport: (String) -> Unit) {
+    val reasons = listOf("Spam or scam", "Harassment or threats", "Sexual or explicit content", "Pretending to be someone else", "Seems underage", "Something else")
+    var selected by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Report and block") },
+        text = {
+            Column {
+                Text(
+                    "There's no company that receives reports - this blocks the person and keeps a note of why on your phone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                reasons.forEach { reason ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { selected = reason },
+                    ) {
+                        RadioButton(selected = selected == reason, onClick = { selected = reason })
+                        Text(reason)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(enabled = selected != null, onClick = { onReport(selected!!) }) { Text("Report") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -381,11 +551,18 @@ private fun MessageBubble(message: ChatMessage, onOpenFile: () -> Unit) {
         bottomEnd = if (message.fromMe) 4.dp else 16.dp,
     )
     Surface(color = bubbleColor, shape = shape, modifier = Modifier.widthIn(max = 280.dp)) {
-        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             when (message.kind) {
                 MessageKind.TEXT -> Text(message.text)
                 MessageKind.FILE -> FileMessageContent(message, onOpen = onOpenFile)
             }
+            Text(
+                // Delivered = the peer's phone confirmed it arrived (see ChatEnvelope.Ack).
+                timeOf(message) + if (message.fromMe && message.id != null) (if (message.delivered) "  ✓✓" else "  ✓") else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.End),
+            )
         }
     }
 }

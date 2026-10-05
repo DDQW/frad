@@ -16,6 +16,9 @@ class ChatEnvelopeJsonTest {
     fun `every known kind round trips`() {
         val envelopes = listOf(
             ChatEnvelope.Text("hello"),
+            ChatEnvelope.Text("with receipt", id = "m-1"),
+            ChatEnvelope.Ack("m-1"),
+            ChatEnvelope.Typing,
             ChatEnvelope.WfdOffer(offer, networkName = "DIRECT-ab", passphrase = "secret"),
             ChatEnvelope.WideOffer(offer),
         )
@@ -29,7 +32,7 @@ class ChatEnvelopeJsonTest {
 
     @Test
     fun `an unknown kind is ignored instead of failing`() {
-        assertEquals(ChatEnvelope.Unknown("typing"), ChatEnvelopeJson.decode("""{"k":"typing"}"""))
+        assertEquals(ChatEnvelope.Unknown("reaction"), ChatEnvelopeJson.decode("""{"k":"reaction","to":"x"}"""))
     }
 
     @Test

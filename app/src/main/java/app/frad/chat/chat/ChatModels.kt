@@ -2,7 +2,8 @@ package app.frad.chat.chat
 
 enum class MessageKind { TEXT, FILE }
 
-/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text]. */
+/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text].
+ *  [id] and [delivered] only matter for the live chat (delivery receipts) and aren't persisted. */
 data class ChatMessage(
     val fromMe: Boolean,
     val text: String,
@@ -12,6 +13,8 @@ data class ChatMessage(
     val mimeType: String? = null,
     val sizeBytes: Long = 0L,
     val localPath: String? = null,
+    val id: String? = null,
+    val delivered: Boolean = false,
 )
 
 /** Maximum size of a file this app will send or accept over any transport (Wi-Fi Direct or
@@ -46,6 +49,11 @@ sealed interface ChatUiState {
         val remoteBio: String,
         val remotePhoto: ByteArray?,
         val messages: List<ChatMessage>,
+        /** The peer is typing right now (see [ChatEnvelope.Typing]). */
+        val peerTyping: Boolean = false,
+        /** Both sides' long-term keys as a number the two people can compare out of band to rule
+         *  out a man in the middle - see [SafetyNumber]. */
+        val safetyNumber: String = "",
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

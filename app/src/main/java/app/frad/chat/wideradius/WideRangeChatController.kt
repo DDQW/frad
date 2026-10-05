@@ -13,7 +13,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -32,6 +35,7 @@ import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
 import app.frad.chat.chat.FileOffer
 import app.frad.chat.chat.FrameTransport
+import app.frad.chat.chat.OpenChat
 import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MAX_TRANSFER_FILE_BYTES
 import app.frad.chat.chat.MessageKind
@@ -96,6 +100,11 @@ class WideRangeChatController(
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     override val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    override val notices: SharedFlow<String> = _notices.asSharedFlow()
+
+    private val openChat by lazy { OpenChat(_state, scope, contactStore, historyStore) }
 
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
@@ -291,11 +300,23 @@ class WideRangeChatController(
         }
     }
 
+    /** A random peer that isn't cooling down from a recent request, or null - after telling the
+     *  user why nothing happens. */
+    private fun pickPeer(candidates: List<NearbyPeer>): NearbyPeer? {
+        if (candidates.isEmpty()) {
+            _notices.tryEmit("Nobody's around yet - keep FRAD open for a moment.")
+            return null
+        }
+        return matcher.pickRandomPeer(candidates, excluding = cooldown.coolingDown()) ?: run {
+            _notices.tryEmit("You've asked everyone around in the last ${Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000} seconds - try again in a moment.")
+            null
+        }
+    }
+
     override fun requestRandomChat() {
         scope.launch {
             if (_state.value !is ChatUiState.Browsing) return@launch
-            val picked = matcher.pickRandomPeer(discoveredByPeerId.values.toList()) ?: return@launch
-            if (!cooldown.canRequest(picked.sessionId)) return@launch
+            val picked = pickPeer(discoveredByPeerId.values.toList()) ?: return@launch
             cooldown.recordRequest(picked.sessionId)
 
             val connecting = ChatUiState.Connecting(picked)
@@ -337,14 +358,21 @@ class WideRangeChatController(
         scope.launch {
             val link = activeLink ?: return@launch
             if (!link.chat.isReady) return@launch
-            appendMessage(ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis()))
             try {
-                link.chat.send(ChatEnvelope.Text(text))
+                openChat.sendText(link.chat, text)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (activeLink === link) endActive("peer disconnected")
+                endLink(link, "peer disconnected")
             }
+        }
+    }
+
+    override fun notifyTyping() {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (!link.chat.isReady) return@launch
+            runCatching { openChat.sendTyping(link.chat) }
         }
     }
 
@@ -376,7 +404,7 @@ class WideRangeChatController(
             _transferStatus.value = null
             result.onSuccess {
                 val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                appendMessage(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+                openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
             }
         }
     }
@@ -397,7 +425,7 @@ class WideRangeChatController(
             _transferStatus.value = null
             result.onSuccess { bytes ->
                 val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                appendMessage(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+                openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
             }
         }
     }
@@ -416,23 +444,9 @@ class WideRangeChatController(
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
     /** Files exchanged with someone who isn't a saved contact don't outlive the chat - the same
-     *  rule chat history follows (see [persistIfSaved]). */
+     *  rule chat history follows (see [ChatHistoryStore]). */
     private fun forgetMediaUnlessSaved(peerId: String?) {
         if (peerId != null && !contactStore.isSaved(peerId)) mediaFileStore.delete(peerId)
-    }
-
-    /** Chat history is only ever written to disk for peers the user chose to save as a
-     *  contact - see [ChatHistoryStore], same rule [app.frad.chat.ble.BleChatController] follows. */
-    private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
-        if (contactStore.isSaved(remotePeerId)) historyStore.append(remotePeerId, message)
-    }
-
-    private fun appendMessage(message: ChatMessage) {
-        val current = _state.value
-        if (current is ChatUiState.Chatting) {
-            _state.value = current.copy(messages = current.messages + message)
-            persistIfSaved(current.remotePeerId, message)
-        }
     }
 
     override fun endActiveConnection(reason: String) {
@@ -441,6 +455,7 @@ class WideRangeChatController(
 
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
+        openChat.end()
         forgetMediaUnlessSaved(activeLink?.chat?.remotePeer?.peerId)
         disarmHandshakeTimeout()
         activeLink?.chat?.close()
@@ -557,20 +572,10 @@ class WideRangeChatController(
                     }
                     is ChatEvent.Ready -> {
                         disarmHandshakeTimeout()
-                        val peer = event.peer
-                        _state.value = ChatUiState.Chatting(
-                            remotePeerId = peer.peerId,
-                            remoteDeviceFingerprint = peer.deviceFingerprint,
-                            remotePseudonym = peer.profile.pseudonym,
-                            remoteGender = peer.profile.gender,
-                            remoteAge = peer.profile.age,
-                            remoteBio = peer.profile.bio,
-                            remotePhoto = peer.profile.photo,
-                            messages = if (contactStore.isSaved(peer.peerId)) historyStore.messagesFor(peer.peerId) else emptyList(),
-                        )
+                        openChat.start(event.peer, identity.publicKey)
                     }
-                    is ChatEvent.Received -> when (val envelope = event.envelope) {
-                        is ChatEnvelope.Text -> appendMessage(ChatMessage(fromMe = false, text = envelope.text, atMillis = System.currentTimeMillis()))
+                    is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
+                        null -> Unit
                         is ChatEnvelope.WideOffer -> {
                             if (link.chat.claimTransferId(envelope.offer.transferId)) {
                                 link.pendingIncomingOffer = envelope.offer
@@ -578,8 +583,7 @@ class WideRangeChatController(
                                 Log.w(TAG, "ignoring file offer reusing transfer id ${envelope.offer.transferId}")
                             }
                         }
-                        is ChatEnvelope.WfdOffer, is ChatEnvelope.Unknown ->
-                            Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
+                        else -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
                     }
                 }
             }

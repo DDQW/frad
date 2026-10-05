@@ -20,7 +20,14 @@ data class FileOffer(val transferId: String, val fileName: String, val mimeType:
  * peer input the same way.
  */
 sealed interface ChatEnvelope {
-    data class Text(val text: String) : ChatEnvelope
+    /** [id] lets the receiver confirm delivery with an [Ack]. */
+    data class Text(val text: String, val id: String? = null) : ChatEnvelope
+
+    /** "Your message [id] arrived." */
+    data class Ack(val id: String) : ChatEnvelope
+
+    /** "I'm typing" - sent at most every few seconds while the user types; shown briefly. */
+    data object Typing : ChatEnvelope
 
     /** BLE chats: the file itself follows over a one-off Wi-Fi Direct group, whose network
      *  name/passphrase ride along here. */
@@ -36,11 +43,16 @@ sealed interface ChatEnvelope {
 
 object ChatEnvelopeJson {
     private const val KIND_TEXT = "txt"
+    private const val KIND_ACK = "ack"
+    private const val KIND_TYPING = "typing"
+    private const val MAX_MESSAGE_ID_CHARS = 64
     private const val KIND_WFD_OFFER = "wfd"
     private const val KIND_WIDE_OFFER = "wide-transfer"
 
     fun encode(envelope: ChatEnvelope): String = when (envelope) {
-        is ChatEnvelope.Text -> JSONObject().put("k", KIND_TEXT).put("t", envelope.text)
+        is ChatEnvelope.Text -> JSONObject().put("k", KIND_TEXT).put("t", envelope.text).also { obj -> envelope.id?.let { obj.put("id", it) } }
+        is ChatEnvelope.Ack -> JSONObject().put("k", KIND_ACK).put("id", envelope.id)
+        ChatEnvelope.Typing -> JSONObject().put("k", KIND_TYPING)
         is ChatEnvelope.WfdOffer -> putOffer(JSONObject().put("k", KIND_WFD_OFFER), envelope.offer)
             .put("ssid", envelope.networkName)
             .put("pass", envelope.passphrase)
@@ -55,7 +67,9 @@ object ChatEnvelopeJson {
     fun decode(json: String): ChatEnvelope {
         val obj = JSONObject(json)
         return when (val kind = obj.getString("k")) {
-            KIND_TEXT -> ChatEnvelope.Text(obj.getString("t"))
+            KIND_TEXT -> ChatEnvelope.Text(obj.getString("t"), obj.optString("id", "").take(MAX_MESSAGE_ID_CHARS).ifEmpty { null })
+            KIND_ACK -> obj.optString("id", "").take(MAX_MESSAGE_ID_CHARS).ifEmpty { null }?.let { ChatEnvelope.Ack(it) } ?: ChatEnvelope.Unknown(kind)
+            KIND_TYPING -> ChatEnvelope.Typing
             KIND_WFD_OFFER -> runCatching {
                 ChatEnvelope.WfdOffer(offer = readOffer(obj), networkName = obj.getString("ssid"), passphrase = obj.getString("pass"))
             }.getOrElse { ChatEnvelope.Unknown(kind) }

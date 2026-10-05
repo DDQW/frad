@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -100,6 +101,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val transferStatus: StateFlow<String?> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.transferStatus ?: flowOf(null) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** One-off messages from whichever layer is active - see [ChatController.notices]. */
+    val notices: Flow<String> = _mode.flatMapLatest { mode ->
+        controllerFlow(mode).flatMapLatest { it?.notices ?: emptyFlow() }
+    }
     val fileTransferAvailable: Boolean get() = activeController?.fileTransferAvailable ?: false
     val myPeerId: String get() = identity.peerId
 
@@ -211,6 +216,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun setBrowsing(enabled: Boolean) { activeController?.setBrowsing(enabled) }
     fun requestRandomChat() { activeController?.requestRandomChat() }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
+    fun notifyTyping() { activeController?.notifyTyping() }
     fun endChat() { activeController?.endActiveConnection("you left") }
     fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
     fun blockActivePeer() { activeController?.blockActivePeer() }

@@ -1,5 +1,6 @@
 package app.frad.chat.chat
 
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -10,12 +11,19 @@ import kotlinx.coroutines.flow.StateFlow
  */
 interface ChatController {
     val state: StateFlow<ChatUiState>
+
+    /** One-off messages for the user that aren't a state of their own - e.g. why tapping
+     *  "Chat with someone nearby" did nothing. */
+    val notices: SharedFlow<String>
     val transferStatus: StateFlow<String?>
     val fileTransferAvailable: Boolean
 
     fun setBrowsing(enabled: Boolean)
     fun requestRandomChat()
     fun sendMessage(text: String)
+
+    /** The user is typing in the open chat; the peer is told so (throttled). */
+    fun notifyTyping()
     fun sendFile(bytes: ByteArray, fileName: String, mimeType: String)
     fun endActiveConnection(reason: String)
     fun blockActivePeer()

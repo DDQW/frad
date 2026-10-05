@@ -20,6 +20,8 @@ data class RemotePeer(
     val peerId: String,
     val deviceFingerprint: String,
     val profile: RemoteProfile,
+    /** Their long-term public key, e.g. for [SafetyNumber]. */
+    val staticKey: ByteArray,
 )
 
 /** What a frame fed to [ChatConnection.onFrame] amounted to, if anything the caller must act on. */
@@ -142,7 +144,7 @@ class ChatConnection(
         }
         Step.EXPECT_PROFILE -> {
             val profile = ProfileEnvelope.decode(session.decryptMessage(frame))
-            val peer = RemotePeer(session.remotePeerId(), remoteDeviceFingerprint!!, profile)
+            val peer = RemotePeer(session.remotePeerId(), remoteDeviceFingerprint!!, profile, session.remoteStaticKey())
             step = Step.READY
             remotePeer = peer
             ChatEvent.Ready(peer)

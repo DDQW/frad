@@ -74,16 +74,19 @@ internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
                 remoteBio = current.remoteBio,
                 remotePhoto = current.remotePhoto,
                 messages = current.messages,
+                peerTyping = current.peerTyping,
+                safetyNumber = current.safetyNumber,
                 alreadySaved = saved,
                 fileTransferAvailable = viewModel.fileTransferAvailable,
                 transferStatus = transferStatus,
                 errorMessage = errorEvent,
                 onDismissError = { viewModel.consumeErrorEvent() },
                 onSend = { viewModel.sendMessage(it) },
+                onTyping = { viewModel.notifyTyping() },
                 onSendFile = { viewModel.sendFile(it) },
                 onLeave = { viewModel.endChat() },
                 onBlock = { viewModel.blockActivePeer() },
-                onReport = { viewModel.reportActivePeer("reported from chat") },
+                onReport = { reason -> viewModel.reportActivePeer(reason) },
                 onSaveContact = {
                     viewModel.saveContact(current.remotePeerId, current.remotePseudonym)
                     saved = true

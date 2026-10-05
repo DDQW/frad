@@ -23,6 +23,14 @@ class Cooldown(
         lastRequestAtMillis[peerId] = now()
     }
 
+    /** Every peer that [canRequest] currently refuses - for the random pick to skip them instead
+     *  of picking one and then doing nothing. */
+    fun coolingDown(): Set<String> {
+        val cutoff = now() - minIntervalMillis
+        lastRequestAtMillis.values.removeAll { it <= cutoff - minIntervalMillis } // forget long-expired entries
+        return lastRequestAtMillis.filterValues { it > cutoff }.keys
+    }
+
     companion object {
         const val DEFAULT_MIN_INTERVAL_MILLIS = 30_000L
     }
