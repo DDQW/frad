@@ -17,6 +17,11 @@
 # aren't on Android.
 -dontwarn org.bouncycastle.**
 
+# Tink (inside androidx.security-crypto, kept only to migrate the old identity storage)
+# references annotation classes it needs only at compile time.
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+
 # Keep line numbers in crash reports readable without shipping the original file names.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
