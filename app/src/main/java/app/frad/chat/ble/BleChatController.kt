@@ -575,7 +575,7 @@ class BleChatController(
     override fun reportActivePeer(reason: String) {
         scope.launch {
             val current = _state.value
-            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason)
+            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason, current.messages)
             endActive("reported")
         }
     }

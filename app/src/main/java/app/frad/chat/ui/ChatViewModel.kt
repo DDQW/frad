@@ -56,6 +56,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val historyStore = ChatHistoryStore(application)
     private val mediaFileStore = MediaFileStore(application)
     private val blockList = BlockList(application)
+    private val reportEvidence = app.frad.chat.safety.ReportEvidence(application)
+    private val reportFlow = app.frad.chat.safety.ReportFlow(application, blockList, reportEvidence)
 
     // Local BLE is owned by LocalBleService, not this ViewModel, so it can keep running in the
     // background when Profile.alwaysVisible is on - see that service's doc comment. Null only for
@@ -158,11 +160,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         historyStore.backfillIfEmpty(ended.peerId, ended.messages.filter { it.kind == app.frad.chat.chat.MessageKind.TEXT })
     }
 
-    /** Blocks the person from [endedChat]; [reason] set makes it a report (see [ReportFlow]). */
+    /** Blocks the person from [endedChat]; [reason] set makes it a report (see [ReportFlow]),
+     *  which also keeps the chat's transcript. */
     fun blockEndedChat(reason: String? = null) {
         val ended = _endedChat.value ?: return
         _endedChat.value = null
-        blockList.block(ended.peerId, ended.deviceFingerprint, ended.pseudonym, reason)
+        if (reason != null) {
+            reportFlow.report(ended.peerId, ended.deviceFingerprint, ended.pseudonym, reason, ended.messages)
+        } else {
+            blockList.block(ended.peerId, ended.deviceFingerprint, ended.pseudonym)
+        }
     }
 
     fun dismissEndedChat() { _endedChat.value = null }
@@ -449,5 +456,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun historyWith(peerId: String): List<ChatMessage> = historyStore.messagesFor(peerId)
 
     fun blockedEntries(): List<BlockEntry> = blockList.entries()
-    fun unblock(entry: BlockEntry) = blockList.unblock(entry.key)
+    /** Unblocking also deletes the report kept with the block, if any. */
+    fun unblock(entry: BlockEntry) {
+        blockList.unblock(entry.key)
+        reportEvidence.delete(entry.key)
+    }
+
+    /** The transcript kept with a report (see [app.frad.chat.safety.ReportEvidence]). */
+    fun reportTranscript(entry: BlockEntry): String? = reportEvidence.transcriptFor(entry.key)
 }

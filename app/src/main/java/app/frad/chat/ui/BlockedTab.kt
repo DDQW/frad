@@ -1,6 +1,15 @@
 package app.frad.chat.ui
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -37,6 +46,8 @@ import app.frad.chat.safety.BlockEntry
 @Composable
 internal fun BlockedTab(viewModel: ChatViewModel) {
     var blocked by remember { mutableStateOf(viewModel.blockedEntries()) }
+    var openReport by remember { mutableStateOf<Pair<BlockEntry, String>?>(null) }
+    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -61,6 +72,12 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                             Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) { BlockEntryText(entry) }
+                            val transcript = remember(entry.key) { viewModel.reportTranscript(entry) }
+                            if (transcript != null) {
+                                IconButton(onClick = { openReport = entry to transcript }) {
+                                    Icon(Icons.Default.Description, contentDescription = "Show report")
+                                }
+                            }
                             IconButton(onClick = {
                                 viewModel.unblock(entry)
                                 blocked = viewModel.blockedEntries()
@@ -72,6 +89,32 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                 }
             }
         }
+    }
+
+    openReport?.let { (entry, transcript) ->
+        AlertDialog(
+            onDismissRequest = { openReport = null },
+            title = { Text("Report: ${Profile.displayName(entry.pseudonym ?: "Unknown", entry.key)}") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        transcript,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // Only ever leaves the phone this way - the user picks where it goes.
+                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, "FRAD chat report")
+                        .putExtra(Intent.EXTRA_TEXT, transcript)
+                    context.startActivity(Intent.createChooser(send, "Export report"))
+                }) { Text("Export") }
+            },
+            dismissButton = { TextButton(onClick = { openReport = null }) { Text("Close") } },
+        )
     }
 }
 
