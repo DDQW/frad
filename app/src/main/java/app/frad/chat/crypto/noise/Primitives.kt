@@ -31,6 +31,13 @@ internal object Primitives {
         return privBytes to pubBytes
     }
 
+    /** The X25519 public key belonging to [privateKey]. */
+    fun publicKeyOf(privateKey: ByteArray): ByteArray {
+        val pub = ByteArray(DH_LEN)
+        X25519PrivateKeyParameters(privateKey, 0).generatePublicKey().encode(pub, 0)
+        return pub
+    }
+
     fun dh(privateKey: ByteArray, publicKey: ByteArray): ByteArray {
         val agreement = X25519Agreement()
         agreement.init(X25519PrivateKeyParameters(privateKey, 0))

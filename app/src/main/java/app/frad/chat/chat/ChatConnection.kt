@@ -126,7 +126,7 @@ class ChatConnection(
             afterHandshake()
         }
         Step.EXPECT_DEVICE_ID -> {
-            val announcement = JSONObject(session.decryptMessage(frame))
+            val announcement = JSONObject(decrypt(frame))
             val fingerprint = announcement.getString(KEY_FINGERPRINT)
             val remoteIsAdult = announcement.getBoolean(KEY_ADULT)
             if (isBlocked(fingerprint)) {
@@ -143,13 +143,13 @@ class ChatConnection(
             }
         }
         Step.EXPECT_PROFILE -> {
-            val profile = ProfileEnvelope.decode(session.decryptMessage(frame))
+            val profile = ProfileEnvelope.decode(decrypt(frame))
             val peer = RemotePeer(session.remotePeerId(), remoteDeviceFingerprint!!, profile, session.remoteStaticKey())
             step = Step.READY
             remotePeer = peer
             ChatEvent.Ready(peer)
         }
-        Step.READY -> ChatEvent.Received(ChatEnvelopeJson.decode(session.decryptMessage(frame)))
+        Step.READY -> ChatEvent.Received(ChatEnvelopeJson.decode(decrypt(frame)))
         Step.BLOCKED -> null
     }
 
@@ -187,8 +187,11 @@ class ChatConnection(
     }
 
     private suspend fun sendEncrypted(plaintext: String) {
-        sendMutex.withLock { transport.send(session.encryptMessage(plaintext)) }
+        val padded = FramePadding.pad(plaintext)
+        sendMutex.withLock { transport.send(session.encryptMessage(padded)) }
     }
+
+    private fun decrypt(frame: ByteArray): String = FramePadding.unpad(session.decryptMessage(frame))
 
     private companion object {
         const val KEY_FINGERPRINT = "fp"
