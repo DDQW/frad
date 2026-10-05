@@ -253,11 +253,9 @@ class BlePeripheralServer(
                         } catch (e: FrameTooLargeException) {
                             Log.w(TAG, "dropping ${device.address}: ${e.message}")
                             frameTooLarge = true
-                            null
-                        }
-                        if (complete != null) {
-                            listener.onFrameReceived(device.address, complete)
-                        }
+                            emptyList()
+                    }
+                    complete.forEach { listener.onFrameReceived(device.address, it) }
                     }
                 } finally {
                     // Always answer the write, even if handling it failed - otherwise the central's

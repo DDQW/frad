@@ -109,9 +109,15 @@ class ChatConnection(
             null
         }
         Step.EXPECT_MESSAGE_2 -> {
-            val message3 = session.completeHandshake(frame)
-            sendRaw(message3)
-            afterHandshake()
+            session.readResponse(frame)
+            // Check the responder before message 3, which would reveal our own identity to them.
+            if (isBlocked(session.remotePeerId())) {
+                step = Step.BLOCKED
+                ChatEvent.Blocked
+            } else {
+                sendRaw(session.finishAsInitiator())
+                afterHandshake()
+            }
         }
         Step.EXPECT_MESSAGE_3 -> {
             session.finishHandshake(frame)

@@ -184,8 +184,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  hash instead previously showed a place tens of km off, easily a different city entirely
      *  once the search radius (and so the shared hash's cell) is wider than "Neighborhood".
      *  Returns null if the permission isn't granted or no location is available yet. */
-    fun useCurrentAreaAsGeohash(): String? {
-        val fineHash = CoarseLocation.lastKnownGeohash(getApplication(), Geohash.MAX_PRECISION) ?: return null
+    suspend fun useCurrentAreaAsGeohash(): String? {
+        val fineHash = CoarseLocation.currentGeohash(getApplication(), Geohash.MAX_PRECISION) ?: return null
         val sharePrecision = Geohash.precisionForRadiusKm(profile.searchRadiusKm)
         profile.coarseGeohash = fineHash.take(sharePrecision)
         return fineHash

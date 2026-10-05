@@ -5,6 +5,7 @@ import android.util.Log
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -38,7 +39,7 @@ object AreaLookup {
      *  on any network failure or if nothing was found there. */
     suspend fun nameFor(context: Context, geohash: String): String? {
         val (lat, lon) = Geohash.decode(geohash)
-        val url = "$BASE_URL/reverse?format=jsonv2&lat=$lat&lon=$lon&zoom=10&accept-language=en"
+        val url = "$BASE_URL/reverse?format=jsonv2&lat=$lat&lon=$lon&zoom=10&accept-language=${language()}"
         val body = fetch(url) ?: return null
         return runCatching { readableName(JSONObject(body).optJSONObject("address")) }
             .onFailure { Log.w(TAG, "reverse geocode: failed to parse response", it) }
@@ -49,7 +50,7 @@ object AreaLookup {
     suspend fun geohashFor(context: Context, query: String, precision: Int): String? {
         if (query.isBlank()) return null
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val url = "$BASE_URL/search?format=jsonv2&q=$encoded&limit=1&accept-language=en"
+        val url = "$BASE_URL/search?format=jsonv2&q=$encoded&limit=1&accept-language=${language()}"
         val body = fetch(url) ?: return null
         return runCatching {
             val results = JSONArray(body)
@@ -58,6 +59,9 @@ object AreaLookup {
             Geohash.encode(first.getString("lat").toDouble(), first.getString("lon").toDouble(), precision)
         }.onFailure { Log.w(TAG, "forward geocode: failed to parse response", it) }.getOrNull()
     }
+
+    /** Place names in the phone's own language ("München", not "Munich"), English as fallback. */
+    private fun language(): String = URLEncoder.encode(Locale.getDefault().toLanguageTag() + ",en", "UTF-8")
 
     private suspend fun fetch(url: String): String? = withContext(Dispatchers.IO) {
         runCatching {

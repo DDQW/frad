@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import app.frad.chat.ble.FrameTooLargeException
 import app.frad.chat.ble.FrameWriter
@@ -122,6 +124,14 @@ class WideRangeChatController(
     private var incomingStreamJob: Job? = null
     private var findPeersJob: Job? = null
 
+    /** Starting the node suspends for a while (dialing bootstrap peers); without this, a quick
+     *  off/on toggle during that time would run a second start next to the first - two libp2p
+     *  hosts, duplicate collectors. Starts and stops run one at a time, in order. */
+    private val nodeLifecycle = Mutex()
+
+    /** Whether [node] is started; only read/written while holding [nodeLifecycle]. */
+    private var nodeRunning = false
+
     /** The wide-range counterpart to BLE's connection timeout: without it, a peer that opens a
      *  chat stream and then never finishes the handshake would hold [activeLink] - and with it
      *  every other incoming chat request, see [onIncomingStream] - for as long as it likes. */
@@ -196,33 +206,49 @@ class WideRangeChatController(
                 _state.value = ChatUiState.Browsing(emptyList())
                 val topics = rendezvousTopics()
                 val ownTopic = topics.first()
-                val started = node.start(
-                    WideRangeConfig(
-                        identitySeed = Random.nextBytes(32),
-                        bootstrapPeers = profile.bootstrapNodes,
-                        rendezvousTopic = ownTopic,
-                        relayOnly = profile.wideRangeRelayOnly,
-                    ),
-                )
-                if (started.isFailure) {
-                    browsing = false
-                    _state.value = ChatUiState.Ended("Couldn't start wide-range networking: ${started.exceptionOrNull()?.message}")
-                    return@launch
+                nodeLifecycle.withLock {
+                    if (!browsing) return@launch // turned off again while waiting for a stop
+                    // Still up from before an off/on toggle that never got to stop it: restart
+                    // cleanly rather than starting a second host next to it.
+                    if (nodeRunning) {
+                        node.stop()
+                        nodeRunning = false
+                    }
+                    val started = node.start(
+                        WideRangeConfig(
+                            identitySeed = Random.nextBytes(32),
+                            bootstrapPeers = profile.bootstrapNodes,
+                            rendezvousTopic = ownTopic,
+                            relayOnly = profile.wideRangeRelayOnly,
+                        ),
+                    )
+                    if (started.isFailure) {
+                        browsing = false
+                        _state.value = ChatUiState.Ended("Couldn't start wide-range networking: ${started.exceptionOrNull()?.message}")
+                        return@launch
+                    }
+                    nodeRunning = true
+                    if (!browsing) {
+                        // Turned off again while the node was still starting.
+                        node.stop()
+                        nodeRunning = false
+                        return@launch
+                    }
+                    topics.forEach { node.startAdvertising(it) }
+                    startDiscoveryCollectors(ownTopic)
                 }
-                if (!browsing) {
-                    // Turned off again while the node was still starting.
-                    node.stop()
-                    return@launch
-                }
-                topics.forEach { node.startAdvertising(it) }
-                startDiscoveryCollectors(ownTopic)
             } else {
                 discoveryJob?.cancel(); discoveryJob = null
                 incomingStreamJob?.cancel(); incomingStreamJob = null
                 findPeersJob?.cancel(); findPeersJob = null
                 endActive("stopped browsing")
                 _state.value = ChatUiState.Idle
-                node.stop()
+                nodeLifecycle.withLock {
+                    if (!browsing && nodeRunning) {
+                        node.stop()
+                        nodeRunning = false
+                    }
+                }
             }
         }
     }
@@ -426,6 +452,12 @@ class WideRangeChatController(
         }
     }
 
+    /** Ends [link]'s chat if it's still the active one; otherwise just closes [link] - never
+     *  whatever other chat may have started since. */
+    private fun endLink(link: Link, reason: String) {
+        if (activeLink === link) endActive(reason) else link.chat.close()
+    }
+
     override fun blockActivePeer() {
         scope.launch {
             val current = _state.value
@@ -505,17 +537,22 @@ class WideRangeChatController(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "dropping connection after bad frame", e)
-                    endActive("connection error")
+                    endLink(link, "connection error")
+                    return@launch
+                }
+                // onFrame may have suspended (sending a reply) - the chat may be gone by now.
+                if (activeLink !== link) {
+                    link.chat.close()
                     return@launch
                 }
                 when (event) {
                     null -> Unit
                     ChatEvent.Blocked -> {
-                        endActive("blocked peer")
+                        endLink(link, "blocked peer")
                         return@launch
                     }
                     ChatEvent.AgeGroupMismatch -> {
-                        endActive("Not a match: FRAD only connects adults with adults and minors with minors.")
+                        endLink(link, "Not a match: FRAD only connects adults with adults and minors with minors.")
                         return@launch
                     }
                     is ChatEvent.Ready -> {

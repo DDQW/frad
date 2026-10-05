@@ -93,15 +93,16 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             return@rememberLauncherForActivityResult
         }
         locationDenied = false
-        val geohash = viewModel.useCurrentAreaAsGeohash()
-        if (geohash == null) {
-            areaStatus = "Couldn't get a location fix yet - try again in a moment."
-            return@rememberLauncherForActivityResult
-        }
         scope.launch {
             resolvingArea = true
-            areaNameDraft = AreaLookup.nameFor(context, geohash) ?: geohash
-            areaStatus = null
+            areaStatus = "Getting your area…"
+            val geohash = viewModel.useCurrentAreaAsGeohash()
+            if (geohash == null) {
+                areaStatus = "Couldn't get a location fix - check that location is switched on, then try again."
+            } else {
+                areaNameDraft = AreaLookup.nameFor(context, geohash) ?: geohash
+                areaStatus = null
+            }
             resolvingArea = false
         }
     }

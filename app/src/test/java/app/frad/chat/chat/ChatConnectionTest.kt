@@ -108,6 +108,20 @@ class ChatConnectionTest {
     }
 
     @Test
+    fun `an initiator never reveals its identity to a responder it has blocked`() = runBlocking<Unit> {
+        val alice = side("alice")
+        val bob = side("bob")
+        alice.blocked += bob.peerId
+
+        connected(alice, bob)
+
+        assertEquals(listOf<ChatEvent>(ChatEvent.Blocked), alice.events)
+        // Bob never received message 3, so the handshake never completed on his side.
+        assertTrue(bob.events.isEmpty())
+        assertFalse(bob.connection.isReady)
+    }
+
+    @Test
     fun `a peer blocked by device fingerprint never gets our profile`() = runBlocking<Unit> {
         val alice = side("alice")
         val bob = side("bob")

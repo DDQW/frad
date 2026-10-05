@@ -51,22 +51,30 @@ class FrameReassembler(private val maxMessageSize: Int = MAX_FRAME_BYTES) {
     private var headerFilled = 0
     private var body: ByteArray? = null
     private var bodyFilled = 0
-    private var leftover = ByteArray(0)
-
-    /** @return a completed message once enough fragments have arrived, or null if more are needed.
+    /** @return every message [fragment] completes, in order - usually none or one, but a peer
+     *  may pack several small frames into one write, and all of them are returned rather than
+     *  left to pile up in a buffer.
      *  @throws FrameTooLargeException if the peer announces a length outside 0..[maxMessageSize];
      *    the reassembler is reset, but the connection should be dropped regardless. */
-    fun offer(fragment: ByteArray): ByteArray? {
-        val input = if (leftover.isEmpty()) fragment else leftover + fragment
-        leftover = ByteArray(0)
+    fun offer(fragment: ByteArray): List<ByteArray> {
+        val complete = mutableListOf<ByteArray>()
         var pos = 0
+        while (pos < fragment.size) {
+            pos = consume(fragment, pos, complete)
+        }
+        return complete
+    }
+
+    /** Feeds [input] from [start] into the current frame; returns how far it got. */
+    private fun consume(input: ByteArray, start: Int, complete: MutableList<ByteArray>): Int {
+        var pos = start
 
         if (body == null) {
-            val headerBytes = minOf(header.size - headerFilled, input.size)
-            input.copyInto(header, headerFilled, 0, headerBytes)
+            val headerBytes = minOf(header.size - headerFilled, input.size - pos)
+            input.copyInto(header, headerFilled, pos, pos + headerBytes)
             headerFilled += headerBytes
-            pos = headerBytes
-            if (headerFilled < header.size) return null
+            pos += headerBytes
+            if (headerFilled < header.size) return pos
 
             val length = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN).int
             if (length !in 0..maxMessageSize) {
@@ -84,19 +92,18 @@ class FrameReassembler(private val maxMessageSize: Int = MAX_FRAME_BYTES) {
         input.copyInto(message, bodyFilled, pos, pos + bodyBytes)
         bodyFilled += bodyBytes
         pos += bodyBytes
-        if (bodyFilled < message.size) return null
+        if (bodyFilled < message.size) return pos
 
-        leftover = input.copyOfRange(pos, input.size) // leftover bytes belong to the next message
+        complete += message
         body = null
         headerFilled = 0
         bodyFilled = 0
-        return message
+        return pos
     }
 
     fun reset() {
         headerFilled = 0
         body = null
         bodyFilled = 0
-        leftover = ByteArray(0)
     }
 }

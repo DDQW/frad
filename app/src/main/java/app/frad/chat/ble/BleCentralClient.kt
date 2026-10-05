@@ -212,9 +212,7 @@ class BleCentralClient(
                     gatt.disconnect()
                     return
                 }
-                if (complete != null) {
-                    listener.onFrameReceived(gatt.device.address, complete)
-                }
+                complete.forEach { listener.onFrameReceived(gatt.device.address, it) }
             }
         }
     }

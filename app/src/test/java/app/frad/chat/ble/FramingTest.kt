@@ -5,6 +5,7 @@ import kotlin.random.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -17,7 +18,7 @@ class FramingTest {
         assertEquals(1, fragments.size)
 
         val reassembler = FrameReassembler()
-        val result = reassembler.offer(fragments[0])
+        val result = reassembler.offer(fragments[0]).single()
         assertArrayEquals(message, result)
     }
 
@@ -30,10 +31,7 @@ class FramingTest {
         val reassembler = FrameReassembler()
         var result: ByteArray? = null
         for (fragment in fragments) {
-            val maybeComplete = reassembler.offer(fragment)
-            if (maybeComplete != null) {
-                result = maybeComplete
-            }
+            reassembler.offer(fragment).singleOrNull()?.let { result = it }
         }
         assertArrayEquals(message, result)
     }
@@ -45,9 +43,9 @@ class FramingTest {
         val reassembler = FrameReassembler()
 
         for (fragment in fragments.dropLast(1)) {
-            assertNull(reassembler.offer(fragment))
+            assertTrue(reassembler.offer(fragment).isEmpty())
         }
-        assertArrayEquals(message, reassembler.offer(fragments.last()))
+        assertArrayEquals(message, reassembler.offer(fragments.last()).single())
     }
 
     @Test
@@ -57,21 +55,21 @@ class FramingTest {
         val second = "a rather longer second message that needs a couple of fragments".toByteArray()
 
         for (fragment in FrameWriter.split(first, maxFragmentSize = 8).dropLast(1)) {
-            assertNull(reassembler.offer(fragment))
+            assertTrue(reassembler.offer(fragment).isEmpty())
         }
-        assertArrayEquals(first, reassembler.offer(FrameWriter.split(first, maxFragmentSize = 8).last()))
+        assertArrayEquals(first, reassembler.offer(FrameWriter.split(first, maxFragmentSize = 8).last()).single())
 
         for (fragment in FrameWriter.split(second, maxFragmentSize = 12).dropLast(1)) {
-            assertNull(reassembler.offer(fragment))
+            assertTrue(reassembler.offer(fragment).isEmpty())
         }
-        assertArrayEquals(second, reassembler.offer(FrameWriter.split(second, maxFragmentSize = 12).last()))
+        assertArrayEquals(second, reassembler.offer(FrameWriter.split(second, maxFragmentSize = 12).last()).single())
     }
 
     @Test
     fun `empty message round trips`() {
         val fragments = FrameWriter.split(ByteArray(0), maxFragmentSize = 64)
         val reassembler = FrameReassembler()
-        assertArrayEquals(ByteArray(0), reassembler.offer(fragments[0]))
+        assertArrayEquals(ByteArray(0), reassembler.offer(fragments[0]).single())
     }
 
     @Test
@@ -82,8 +80,16 @@ class FramingTest {
         val reassembler = FrameReassembler()
 
         // First write: all of message one plus the start of message two.
-        assertArrayEquals(first, reassembler.offer(wire.copyOfRange(0, 10)))
-        assertArrayEquals(second, reassembler.offer(wire.copyOfRange(10, wire.size)))
+        assertArrayEquals(first, reassembler.offer(wire.copyOfRange(0, 10)).single())
+        assertArrayEquals(second, reassembler.offer(wire.copyOfRange(10, wire.size)).single())
+    }
+
+    @Test
+    fun `several frames packed into one write all come out at once`() {
+        val frames = (1..50).map { "m$it".toByteArray() }
+        val wire = frames.map { FrameWriter.split(it, maxFragmentSize = 64).single() }.reduce { a, b -> a + b }
+        val out = FrameReassembler().offer(wire)
+        assertEquals(frames.map { it.toList() }, out.map { it.toList() })
     }
 
     @Test
@@ -105,7 +111,7 @@ class FramingTest {
         val reassembler = FrameReassembler()
         var result: ByteArray? = null
         for (fragment in FrameWriter.split(message, maxFragmentSize = 4096)) {
-            result = reassembler.offer(fragment) ?: result
+            reassembler.offer(fragment).singleOrNull()?.let { result = it }
         }
         assertArrayEquals(message, result)
     }

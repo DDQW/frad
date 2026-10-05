@@ -48,19 +48,18 @@ object ChatEnvelopeJson {
         is ChatEnvelope.Unknown -> JSONObject().put("k", envelope.kind)
     }.toString()
 
-    /** @throws org.json.JSONException or [IllegalArgumentException] if [json] is malformed or a
-     *  known kind is missing a required field - a protocol error the caller should answer by
-     *  dropping the connection. */
+    /** @throws org.json.JSONException if [json] isn't an envelope at all, or a text message is
+     *  malformed - a protocol error the caller should answer by dropping the connection. A file
+     *  offer that doesn't check out (see [readOffer]) only costs that one file: it comes back as
+     *  [ChatEnvelope.Unknown], i.e. ignored, rather than ending the whole chat. */
     fun decode(json: String): ChatEnvelope {
         val obj = JSONObject(json)
         return when (val kind = obj.getString("k")) {
             KIND_TEXT -> ChatEnvelope.Text(obj.getString("t"))
-            KIND_WFD_OFFER -> ChatEnvelope.WfdOffer(
-                offer = readOffer(obj),
-                networkName = obj.getString("ssid"),
-                passphrase = obj.getString("pass"),
-            )
-            KIND_WIDE_OFFER -> ChatEnvelope.WideOffer(readOffer(obj))
+            KIND_WFD_OFFER -> runCatching {
+                ChatEnvelope.WfdOffer(offer = readOffer(obj), networkName = obj.getString("ssid"), passphrase = obj.getString("pass"))
+            }.getOrElse { ChatEnvelope.Unknown(kind) }
+            KIND_WIDE_OFFER -> runCatching { ChatEnvelope.WideOffer(readOffer(obj)) }.getOrElse { ChatEnvelope.Unknown(kind) }
             else -> ChatEnvelope.Unknown(kind)
         }
     }

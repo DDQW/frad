@@ -33,21 +33,25 @@ class ChatEnvelopeJsonTest {
     }
 
     @Test
-    fun `an offer without a transfer id is rejected`() {
-        // Such an offer can't get a unique key - see ChatSession.deriveTransferKey.
-        assertThrows(JSONException::class.java) {
-            ChatEnvelopeJson.decode("""{"k":"wide-transfer","name":"a","mime":"b","size":1}""")
-        }
+    fun `an offer without a transfer id is ignored, not accepted`() {
+        // Such an offer can't get a unique key - see ChatSession.deriveTransferKey. It costs the
+        // file, not the chat.
+        assertEquals(
+            ChatEnvelope.Unknown("wide-transfer"),
+            ChatEnvelopeJson.decode("""{"k":"wide-transfer","name":"a","mime":"b","size":1}"""),
+        )
     }
 
     @Test
-    fun `an offer with an implausible transfer id or size is rejected`() {
-        assertThrows(IllegalArgumentException::class.java) {
-            ChatEnvelopeJson.decode("""{"k":"wide-transfer","tid":"${"x".repeat(65)}","name":"a","mime":"b","size":1}""")
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            ChatEnvelopeJson.decode("""{"k":"wide-transfer","tid":"abc","name":"a","mime":"b","size":-1}""")
-        }
+    fun `an offer with an implausible transfer id or size is ignored`() {
+        assertEquals(
+            ChatEnvelope.Unknown("wide-transfer"),
+            ChatEnvelopeJson.decode("""{"k":"wide-transfer","tid":"${"x".repeat(65)}","name":"a","mime":"b","size":1}"""),
+        )
+        assertEquals(
+            ChatEnvelope.Unknown("wfd"),
+            ChatEnvelopeJson.decode("""{"k":"wfd","tid":"abc","name":"a","mime":"b","size":-1,"ssid":"s","pass":"p"}"""),
+        )
     }
 
     @Test

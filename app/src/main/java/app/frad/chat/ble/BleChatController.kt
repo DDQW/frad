@@ -464,15 +464,12 @@ class BleChatController(
 
     override fun onCentralConnected(deviceAddress: String) {
         scope.launch {
-            // Normally activeAddress is only set once we're already talking to someone, so any
-            // other inbound connection is "busy, go away". But requestRandomChat also sets it
-            // (state Connecting) while our own outbound attempt is still pending - an inbound
-            // connection arriving then (most likely the very peer we picked, dialing us at the
-            // same moment) takes over instead, and the outbound one is dropped in onConnected.
-            val awaitingInboundHandshake = _state.value is ChatUiState.Connecting
-            Log.d(TAG, "onCentralConnected addr=$deviceAddress activeAddress=$activeAddress awaitingInboundHandshake=$awaitingInboundHandshake")
-            if (activeAddress != null && !awaitingInboundHandshake) {
-                peripheral.disconnectDevice(deviceAddress) // already busy with another chat
+            // Busy with a chat - or dialing out ourselves: requestRandomChat stops our GATT server
+            // before connecting, so an inbound link arriving now could never carry a handshake
+            // and would only push aside the outbound attempt that can.
+            Log.d(TAG, "onCentralConnected addr=$deviceAddress activeAddress=$activeAddress state=${_state.value}")
+            if (activeAddress != null) {
+                peripheral.disconnectDevice(deviceAddress)
                 return@launch
             }
             activeAddress = deviceAddress

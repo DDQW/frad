@@ -42,8 +42,21 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
 
     /** Initiator: call with the responder's message, send the result back, then handshake is complete. */
     fun completeHandshake(message2: ByteArray): ByteArray {
+        readResponse(message2)
+        return finishAsInitiator()
+    }
+
+    /** Initiator, first half of [completeHandshake]: learns the responder's identity
+     *  ([remotePeerId] works afterwards) without revealing ours yet - message 3 is what carries
+     *  our static key, so a caller can still walk away from a peer it has blocked. */
+    fun readResponse(message2: ByteArray) {
         check(isInitiator)
         handshake.readMessage2(message2)
+    }
+
+    /** Initiator, second half of [completeHandshake]: message 3 to send back. */
+    fun finishAsInitiator(): ByteArray {
+        check(isInitiator)
         val message3 = handshake.writeMessage3()
         transportKeys = handshake.split()
         return message3
