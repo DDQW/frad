@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.emptyFlow
 class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
     companion object {
         const val isSupported: Boolean = false
+
+        /** Without the Go side there's nothing to validate with, so nothing passes. */
+        fun validateNodeList(entries: List<String>): List<String> = emptyList()
     }
 
     val localPeerId: String = ""
@@ -25,6 +28,11 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
     suspend fun startAdvertising(rendezvousTopic: String): Result<Unit> = unsupported()
     suspend fun findPeersOnce(rendezvousTopic: String): Result<Unit> = unsupported()
     suspend fun openStream(peerId: String, protocolId: String): Result<WideRangeByteStream> = unsupported()
+
+    fun setKnownNodes(nodes: List<String>) = Unit
+    suspend fun exchangeNodesWithBootstrapPeers(): Result<List<String>> = unsupported()
+    suspend fun exchangeNodesWithPeer(peerId: String): Result<List<String>> = unsupported()
+    fun takeLearnedNodes(): List<String> = emptyList()
 
     fun discoveredPeers(): Flow<String> = emptyFlow()
     fun incomingStreams(): Flow<Pair<String, WideRangeByteStream>> = emptyFlow()
