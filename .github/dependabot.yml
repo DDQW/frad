@@ -1,0 +1,27 @@
+# Weekly update PRs for every dependency ecosystem in this repo. Actions are pinned to
+# commit SHAs (see .github/workflows/), which Dependabot keeps current along with the
+# version comment next to each pin.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      androidx:
+        patterns: ["androidx.*"]
+      kotlin:
+        patterns: ["org.jetbrains.kotlin*"]
+
+  - package-ecosystem: gomod
+    directory: /p2p-go
+    schedule:
+      interval: weekly
+    groups:
+      libp2p:
+        patterns: ["github.com/libp2p/*", "github.com/multiformats/*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
