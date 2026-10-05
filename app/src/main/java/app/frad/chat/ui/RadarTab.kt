@@ -43,6 +43,67 @@ import app.frad.chat.profile.Profile
 
 @Composable
 internal fun RadarTab(state: ChatUiState, viewModel: ChatViewModel) {
+    val endedChat by viewModel.endedChat.collectAsState()
+    if (state !is ChatUiState.Chatting) {
+        endedChat?.let { ended ->
+            Column(modifier = Modifier.fillMaxSize()) {
+                EndedChatCard(
+                    ended = ended,
+                    alreadySaved = viewModel.isContactSaved(ended.peerId),
+                    onSave = viewModel::saveEndedChat,
+                    onBlock = { viewModel.blockEndedChat() },
+                    onReport = { reason -> viewModel.blockEndedChat(reason) },
+                    onDismiss = viewModel::dismissEndedChat,
+                )
+                Box(modifier = Modifier.weight(1f)) { RadarStateContent(state, viewModel) }
+            }
+            return
+        }
+    }
+    RadarStateContent(state, viewModel)
+}
+
+/** "Your chat with X ended" with what can still be done about X - see [ChatViewModel.endedChat]. */
+@Composable
+private fun EndedChatCard(
+    ended: ChatViewModel.EndedChat,
+    alreadySaved: Boolean,
+    onSave: () -> Unit,
+    onBlock: () -> Unit,
+    onReport: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var confirmBlock by remember { mutableStateOf(false) }
+    var reporting by remember { mutableStateOf(false) }
+    val name = Profile.displayName(ended.pseudonym, ended.peerId)
+    androidx.compose.material3.Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Your chat with $name ended.", style = MaterialTheme.typography.bodyMedium)
+            Row {
+                if (!alreadySaved) TextButton(onClick = onSave) { Text("Save contact") }
+                TextButton(onClick = { confirmBlock = true }) { Text("Block", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { reporting = true }) { Text("Report…") }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Dismiss") }
+            }
+        }
+    }
+    if (confirmBlock) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmBlock = false },
+            title = { Text("Block $name?") },
+            text = { Text("You won't be matched with this person again, even if they reset the app.") },
+            confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text("Block") } },
+            dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("Cancel") } },
+        )
+    }
+    if (reporting) {
+        ReportDialog(onDismiss = { reporting = false }, onReport = { reason -> reporting = false; onReport(reason) })
+    }
+}
+
+@Composable
+private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
     when (val current = state) {
         ChatUiState.Idle -> {
             val mode by viewModel.mode.collectAsState()

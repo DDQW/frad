@@ -110,6 +110,55 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val transferProgress: StateFlow<Float?> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.transferProgress ?: flowOf(null) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The chat that just ended, so the person can still be saved, blocked or reported once
+     *  they're gone - they may have left precisely because the chat went badly. Cleared when the
+     *  user acts on it, dismisses it, or the next chat opens. */
+    data class EndedChat(
+        val peerId: String,
+        val deviceFingerprint: String,
+        val pseudonym: String,
+        val messages: List<ChatMessage>,
+    )
+
+    private val _endedChat = MutableStateFlow<EndedChat?>(null)
+    val endedChat: StateFlow<EndedChat?> = _endedChat.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            var open: ChatUiState.Chatting? = null
+            state.collect { current ->
+                if (current is ChatUiState.Chatting) {
+                    open = current
+                    _endedChat.value = null
+                } else {
+                    val ended = open ?: return@collect
+                    open = null
+                    // Blocked or reported from inside the chat: nothing left to do with them.
+                    if (!blockList.isBlocked(ended.remotePeerId)) {
+                        _endedChat.value = EndedChat(ended.remotePeerId, ended.remoteDeviceFingerprint, ended.remotePseudonym, ended.messages)
+                    }
+                }
+            }
+        }
+    }
+
+    fun saveEndedChat() {
+        val ended = _endedChat.value ?: return
+        _endedChat.value = null
+        contactStore.save(ended.peerId, ended.pseudonym)
+        // The texts are still in memory; the files went with the chat (see MediaFileStore).
+        historyStore.backfillIfEmpty(ended.peerId, ended.messages.filter { it.kind == app.frad.chat.chat.MessageKind.TEXT })
+    }
+
+    /** Blocks the person from [endedChat]; [reason] set makes it a report (see [ReportFlow]). */
+    fun blockEndedChat(reason: String? = null) {
+        val ended = _endedChat.value ?: return
+        _endedChat.value = null
+        blockList.block(ended.peerId, ended.deviceFingerprint, ended.pseudonym, reason)
+    }
+
+    fun dismissEndedChat() { _endedChat.value = null }
+
     /** One-off messages from whichever layer is active - see [ChatController.notices]. */
     val notices: Flow<String> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.notices ?: emptyFlow() }

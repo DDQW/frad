@@ -41,6 +41,7 @@ import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.crypto.TransferCipher
+import app.frad.chat.media.FileTypeCheck
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
@@ -468,7 +469,7 @@ class BleChatController(
                 val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes, onProgress = progressOf(offer.sizeBytes))
                 result.onSuccess { bytes ->
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
                 }.onFailure {
                     if (activeLink() === link) _notices.tryEmit("${offer.fileName} couldn't be received.")
                 }

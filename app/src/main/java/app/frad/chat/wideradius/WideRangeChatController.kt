@@ -45,6 +45,7 @@ import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.crypto.ProofOfWork
 import app.frad.chat.crypto.TransferCipher
+import app.frad.chat.media.FileTypeCheck
 import app.frad.chat.crypto.readChunked
 import app.frad.chat.crypto.writeChunked
 import app.frad.chat.data.MediaFileStore
@@ -520,7 +521,7 @@ class WideRangeChatController(
                 }
                 if (bytes != null) {
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
                 } else if (activeLink === link) {
                     _notices.tryEmit("${offer.fileName} couldn't be received.")
                 }

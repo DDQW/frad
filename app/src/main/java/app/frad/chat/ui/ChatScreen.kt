@@ -565,7 +565,7 @@ private fun timeOf(message: ChatMessage): String =
     timeFormat.format(Instant.ofEpochMilli(message.atMillis).atZone(ZoneId.systemDefault()))
 
 @Composable
-private fun ReportDialog(onDismiss: () -> Unit, onReport: (String) -> Unit) {
+internal fun ReportDialog(onDismiss: () -> Unit, onReport: (String) -> Unit) {
     val reasons = listOf("Spam or scam", "Harassment or threats", "Sexual or explicit content", "Pretending to be someone else", "Seems underage", "Something else")
     var selected by remember { mutableStateOf<String?>(null) }
     AlertDialog(
