@@ -292,6 +292,14 @@ class WideRangeChatController(
                 node.findPeersOnce(topic)
                 delay(FIND_PEERS_INTERVAL_MILLIS)
                 forgetStalePeers()
+                // A time-limited visibility (Profile.visibleUntilMillis) ran out - never mid-chat.
+                val until = profile.visibleUntilMillis
+                if (until > 0 && System.currentTimeMillis() >= until && activeLink == null) {
+                    profile.visibleUntilMillis = 0
+                    setBrowsing(false)
+                    _notices.tryEmit("Your visibility time is up - you're not visible any more.")
+                    break
+                }
             }
         }
     }

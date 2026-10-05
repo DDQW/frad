@@ -22,6 +22,9 @@ interface ChatController {
     val fileTransferAvailable: Boolean
 
     fun setBrowsing(enabled: Boolean)
+
+    /** Whether FRAD is on screen - a layer may do less in the background (see BLE scanning). */
+    fun setUiVisible(visible: Boolean) {}
     fun requestRandomChat()
     fun sendMessage(text: String)
 

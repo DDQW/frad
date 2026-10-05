@@ -67,7 +67,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            _bleController.value = (service as LocalBleService.LocalBinder).controller
+            _bleController.value = (service as LocalBleService.LocalBinder).controller.also { it.setUiVisible(uiVisible) }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             _bleController.value = null
@@ -110,6 +110,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val transferProgress: StateFlow<Float?> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.transferProgress ?: flowOf(null) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    // Declared before the init block below, which reads it as soon as it starts collecting.
+    private val _visibleUntilMillis = MutableStateFlow(profile.visibleUntilMillis)
+
+    /** When being visible ends by itself (0 = when switched off) - see [Profile.visibleUntilMillis]. */
+    val visibleUntilMillis: StateFlow<Long> = _visibleUntilMillis.asStateFlow()
+
     /** The chat that just ended, so the person can still be saved, blocked or reported once
      *  they're gone - they may have left precisely because the chat went badly. Cleared when the
      *  user acts on it, dismisses it, or the next chat opens. */
@@ -127,6 +133,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             var open: ChatUiState.Chatting? = null
             state.collect { current ->
+                // A controller ends a time-limited visibility by itself (Profile.visibleUntilMillis).
+                _visibleUntilMillis.value = profile.visibleUntilMillis
                 if (current is ChatUiState.Chatting) {
                     open = current
                     _endedChat.value = null
@@ -323,12 +331,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _mode.value = newMode
     }
 
-    fun setBrowsing(enabled: Boolean) { activeController?.setBrowsing(enabled) }
+    fun setBrowsing(enabled: Boolean) {
+        if (!enabled) setVisibleFor(null) // a limit belongs to one stretch of being visible
+        activeController?.setBrowsing(enabled)
+    }
     fun requestRandomChat() { activeController?.requestRandomChat() }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
     fun notifyTyping() { activeController?.notifyTyping() }
     fun endChat() { activeController?.endActiveConnection("you left") }
     fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
+    /** Whether FRAD is on screen - see [ChatController.setUiVisible]. */
+    private var uiVisible = false
+
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        _bleController.value?.setUiVisible(visible)
+        wideController.setUiVisible(visible)
+    }
+
+    /** Limits the current visibility to [minutes] from now, or lifts the limit (null). */
+    fun setVisibleFor(minutes: Int?) {
+        val until = minutes?.let { System.currentTimeMillis() + it * 60_000L } ?: 0L
+        profile.visibleUntilMillis = until
+        _visibleUntilMillis.value = until
+    }
+
     fun answerIncomingFile(accept: Boolean) { activeController?.answerIncomingFile(accept) }
     fun cancelTransfer() { activeController?.cancelTransfer() }
     fun blockActivePeer() { activeController?.blockActivePeer() }

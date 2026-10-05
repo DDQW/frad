@@ -190,8 +190,35 @@ class BleChatController(
         advertisingWarning = null
         peripheral.stop()
         startAdvertisingSession()
-        central.startScanning()
+        if (uiVisible) central.startScanning()
         _state.value = browsingState()
+    }
+
+    /** Whether FRAD is on screen. Scanning (finding others) only matters then - nobody can pick a
+     *  chat partner from a list they can't see - so in the background only advertising and the
+     *  GATT server run (others can still find and message us), which costs far less battery. */
+    private var uiVisible = false
+
+    override fun setUiVisible(visible: Boolean) {
+        scope.launch {
+            if (visible == uiVisible) return@launch
+            uiVisible = visible
+            if (!browsing || !bluetoothOn() || activeAddress != null) return@launch
+            if (visible) {
+                central.startScanning()
+            } else {
+                central.stopScanning()
+            }
+        }
+    }
+
+    /** Runs on this controller's dispatcher when a time-limited visibility (see
+     *  [Profile.visibleUntilMillis]) runs out - [LocalBleService] drops its notification then. */
+    var onVisibilityExpired: (() -> Unit)? = null
+
+    private fun visibilityExpired(): Boolean {
+        val until = profile.visibleUntilMillis
+        return until > 0 && System.currentTimeMillis() >= until
     }
 
     /** Guards against a stuck [ChatUiState.Connecting]/[ChatUiState.Handshaking]: if a peer
@@ -274,6 +301,19 @@ class BleChatController(
                         while (true) {
                             delay(SESSION_ROTATION_MILLIS)
                             rotateSessionId()
+                        }
+                    }
+                    launch {
+                        while (true) {
+                            delay(VISIBILITY_CHECK_MILLIS)
+                            // Never in the middle of a chat - the limit is about being found.
+                            if (visibilityExpired() && activeAddress == null) {
+                                profile.visibleUntilMillis = 0
+                                setBrowsing(false)
+                                _notices.tryEmit("Your visibility time is up - you're not visible any more.")
+                                onVisibilityExpired?.invoke()
+                                break
+                            }
                         }
                     }
                 }
@@ -682,6 +722,7 @@ class BleChatController(
         const val TAG = "BleChatController"
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
         const val STALE_PEER_CHECK_MILLIS = 10_000L
+        private const val VISIBILITY_CHECK_MILLIS = 30_000L
         const val PEER_TTL_MILLIS = 30_000L
         const val SESSION_ROTATION_MILLIS = 10 * 60_000L
         const val AGE_MISMATCH_REASON = "Not a match: FRAD only connects adults with adults and minors with minors."

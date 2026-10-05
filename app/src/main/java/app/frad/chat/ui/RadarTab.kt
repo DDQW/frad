@@ -117,6 +117,8 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
         is ChatUiState.Browsing -> BrowsingContent(
             peerCount = current.nearbyPeers.size,
             warning = current.warning,
+            visibleUntilMillis = viewModel.visibleUntilMillis.collectAsState().value,
+            onVisibleFor = viewModel::setVisibleFor,
             onStop = { viewModel.setBrowsing(false) },
             onRandomChat = { viewModel.requestRandomChat() },
         )
@@ -208,6 +210,8 @@ private fun PausedContent(reason: String, onStop: () -> Unit) {
             ) { Text("Turn on Bluetooth") }
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onStop) { Text("Stop being visible") }
+            Spacer(Modifier.height(16.dp))
+            VisibilityLimit(visibleUntilMillis, onVisibleFor)
         }
     }
 }
@@ -262,7 +266,14 @@ private fun IdleContent(mode: ChatMode, wideRangeAvailable: Boolean, onModeChang
 }
 
 @Composable
-private fun BrowsingContent(peerCount: Int, warning: String?, onStop: () -> Unit, onRandomChat: () -> Unit) {
+private fun BrowsingContent(
+    peerCount: Int,
+    warning: String?,
+    visibleUntilMillis: Long,
+    onVisibleFor: (minutes: Int?) -> Unit,
+    onStop: () -> Unit,
+    onRandomChat: () -> Unit,
+) {
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
             Icon(
@@ -292,6 +303,40 @@ private fun BrowsingContent(peerCount: Int, warning: String?, onStop: () -> Unit
             }
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onStop) { Text("Stop being visible") }
+            Spacer(Modifier.height(16.dp))
+            VisibilityLimit(visibleUntilMillis, onVisibleFor)
+        }
+    }
+}
+
+private val VISIBILITY_LIMITS = listOf(null to "Until I stop", 30 to "30 min", 60 to "1 h", 180 to "3 h")
+
+/** "Stay visible: until I stop / 30 min / 1 h / 3 h" - see [ChatViewModel.setVisibleFor]. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun VisibilityLimit(visibleUntilMillis: Long, onVisibleFor: (Int?) -> Unit) {
+    // Which chip was picked last in this screen; the deadline itself is what counts.
+    var picked by remember { mutableStateOf<Int?>(null) }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    androidx.compose.runtime.LaunchedEffect(visibleUntilMillis) {
+        while (true) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(30_000)
+        }
+    }
+    val remainingMinutes = if (visibleUntilMillis > 0) ((visibleUntilMillis - now) / 60_000).coerceAtLeast(0) else null
+    Text(
+        if (remainingMinutes != null) "Visible for about $remainingMinutes more min" else "Stay visible",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        VISIBILITY_LIMITS.forEach { (minutes, label) ->
+            FilterChip(
+                selected = if (visibleUntilMillis == 0L) minutes == null else picked == minutes,
+                onClick = { picked = minutes; onVisibleFor(minutes) },
+                label = { Text(label) },
+            )
         }
     }
 }

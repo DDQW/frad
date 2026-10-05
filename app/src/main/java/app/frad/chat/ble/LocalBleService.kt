@@ -58,6 +58,13 @@ class LocalBleService : Service() {
         val identity = Identity.loadOrCreate(applicationContext)
         profile = Profile(applicationContext)
         controller = BleChatController(applicationContext, identity, profile)
+        controller.onVisibilityExpired = {
+            // The user limited how long they want to be visible - that ends "always visible" too.
+            serviceScope.launch {
+                profile.alwaysVisible = false
+                leaveForeground()
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

@@ -68,6 +68,12 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
 
+    /** When being visible (browsing) should end by itself, in epoch millis; 0 = until switched
+     *  off. Checked by the controllers while browsing - see the Radar tab's "Stay visible". */
+    var visibleUntilMillis: Long
+        get() = prefs.getLong(KEY_VISIBLE_UNTIL, 0L)
+        set(value) { prefs.edit().putLong(KEY_VISIBLE_UNTIL, value).apply() }
+
     /** Saved chats with contacts are deleted after this many days; 0 keeps them until the
      *  contact or the chat is deleted. See [app.frad.chat.contacts.ChatHistoryStore]. */
     var historyRetentionDays: Int
@@ -137,6 +143,7 @@ class Profile(context: Context) {
         private const val KEY_RELAY_ONLY = "wide_range_relay_only"
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_HISTORY_RETENTION_DAYS = "history_retention_days"
+        private const val KEY_VISIBLE_UNTIL = "visible_until"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

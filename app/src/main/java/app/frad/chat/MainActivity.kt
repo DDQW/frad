@@ -132,11 +132,13 @@ class MainActivity : ComponentActivity() {
             promptedForThisLock = true
             unlock()
         }
+        viewModel.setUiVisible(true)
     }
 
     override fun onStop() {
         super.onStop()
         backgroundedAtMillis = SystemClock.elapsedRealtime()
+        viewModel.setUiVisible(false)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
