@@ -36,7 +36,7 @@ class ChatConnectionTest {
             isInitiator = isInitiator,
             identity = identity,
             transport = transport,
-            localDeviceFingerprint = fingerprint,
+            deviceFingerprintFor = { fingerprint },
             localProfile = { JSONObject().put("pseudonym", pseudonym).put("gender", "FEMALE").toString() },
             isBlocked = { it in blocked },
         ).also { connection = it }

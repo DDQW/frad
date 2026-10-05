@@ -1,6 +1,5 @@
 package app.frad.chat.ui
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +35,7 @@ import app.frad.chat.profile.Profile
 internal fun Avatar(label: String, photoBytes: ByteArray? = null, size: androidx.compose.ui.unit.Dp = 40.dp) {
     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(size)) {
         val bitmap = remember(photoBytes) {
-            photoBytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }.getOrNull() }
+            photoBytes?.let { runCatching { decodeSampled(it, AVATAR_MAX_PIXELS)?.asImageBitmap() }.getOrNull() }
         }
         if (bitmap != null) {
             Image(
@@ -78,3 +77,6 @@ internal fun SectionCard(title: String, content: @Composable ColumnScope.() -> U
         }
     }
 }
+
+/** Large enough for the biggest avatar shown (56dp) on a high-density screen. */
+private const val AVATAR_MAX_PIXELS = 256

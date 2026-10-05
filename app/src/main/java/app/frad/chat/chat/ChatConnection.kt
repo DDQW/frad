@@ -54,7 +54,9 @@ class ChatConnection(
     val isInitiator: Boolean,
     identity: Identity,
     private val transport: FrameTransport,
-    private val localDeviceFingerprint: String,
+    /** The device fingerprint to present to a peer, given their static key - see
+     *  [app.frad.chat.safety.DeviceFingerprint.forPeer]. */
+    private val deviceFingerprintFor: (remoteStaticKey: ByteArray) -> String,
     private val localProfile: () -> String,
     private val isBlocked: (String) -> Boolean,
 ) {
@@ -135,7 +137,7 @@ class ChatConnection(
             return ChatEvent.Blocked
         }
         step = Step.EXPECT_DEVICE_ID
-        sendEncrypted(localDeviceFingerprint)
+        sendEncrypted(deviceFingerprintFor(session.remoteStaticKey()))
         return null
     }
 

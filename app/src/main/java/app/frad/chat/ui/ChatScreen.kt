@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -55,12 +54,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -68,6 +69,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.MAX_MESSAGE_CHARS
@@ -391,7 +394,10 @@ private fun MessageBubble(message: ChatMessage, onOpenFile: () -> Unit) {
 private fun FileMessageContent(message: ChatMessage, onOpen: () -> Unit) {
     val path = message.localPath ?: return
     if (message.mimeType?.startsWith("image/") == true) {
-        val bitmap = remember(path) { BitmapFactory.decodeFile(path)?.asImageBitmap() }
+        // Up to 25 MB from a stranger: decoded subsampled to the preview size, off the main thread.
+        val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
+            value = withContext(Dispatchers.IO) { runCatching { decodeSampled(path, IMAGE_PREVIEW_MAX_PIXELS)?.asImageBitmap() }.getOrNull() }
+        }
         Column {
             Text(message.fileName ?: "Image", style = MaterialTheme.typography.bodySmall)
             if (bitmap != null) {
@@ -428,3 +434,6 @@ private fun openFile(context: Context, message: ChatMessage) {
     }
     runCatching { context.startActivity(intent) }
 }
+
+/** Large enough for the 160dp inline image preview on a high-density screen. */
+private const val IMAGE_PREVIEW_MAX_PIXELS = 480

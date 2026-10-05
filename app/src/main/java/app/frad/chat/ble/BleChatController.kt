@@ -1,6 +1,12 @@
 package app.frad.chat.ble
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.AdvertiseCallback
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import kotlin.random.Random
@@ -64,7 +70,7 @@ class BleChatController(
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
-    private val deviceFingerprint = DeviceFingerprint.compute(context)
+    private val deviceSecret = DeviceFingerprint.deviceSecret(context)
 
     private val peripheral = BlePeripheralServer(context, this)
     private val central = BleCentralClient(context, this)
@@ -107,13 +113,80 @@ class BleChatController(
     private var activeAddress: String? = null
     private var browsing = false
 
+    /** Why others can't find us right now, if advertising failed - see [onAdvertisingFailed]. */
+    private var advertisingWarning: String? = null
+
+    private val bluetoothAdapter: BluetoothAdapter? =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+
+    private fun bluetoothOn(): Boolean = bluetoothAdapter?.isEnabled == true
+
+    /** Turning Bluetooth (or airplane mode) off tears down the GATT server, advertiser and scan
+     *  underneath us; without this the app would keep claiming to be visible while being deaf,
+     *  and stay that way after Bluetooth comes back. */
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val newState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            scope.launch { onBluetoothStateChanged(newState) }
+        }
+    }
+
+    init {
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(bluetoothStateReceiver, filter)
+        }
+    }
+
+    /** Releases what [init] registered; the controller can't be used afterwards. */
+    fun close() {
+        runCatching { context.unregisterReceiver(bluetoothStateReceiver) }
+        setBrowsing(false)
+    }
+
+    private fun browsingState(): ChatUiState =
+        if (!bluetoothOn()) ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+        else ChatUiState.Browsing(discoveredBySessionId.values.toList(), advertisingWarning)
+
+    private fun onBluetoothStateChanged(newState: Int) {
+        if (!browsing) return
+        when (newState) {
+            BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                if (_state.value is ChatUiState.Paused) return
+                Log.d(TAG, "Bluetooth going off - pausing")
+                endActive("Bluetooth was turned off")
+                central.stopScanning()
+                peripheral.stop()
+                _state.value = ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+            }
+            BluetoothAdapter.STATE_ON -> {
+                if (_state.value !is ChatUiState.Paused) return
+                Log.d(TAG, "Bluetooth back on - resuming")
+                startRadios()
+            }
+        }
+    }
+
+    /** (Re)starts advertising and scanning from a clean peer list. */
+    private fun startRadios() {
+        discoveredBySessionId.clear()
+        addressBySessionId.clear()
+        advertisingWarning = null
+        peripheral.stop()
+        startAdvertisingSession()
+        central.startScanning()
+        _state.value = browsingState()
+    }
+
     /** Guards against a stuck [ChatUiState.Connecting]/[ChatUiState.Handshaking]: if a peer
      *  drops off mid-handshake, or a connection attempt never completes, this brings the UI
      *  back to browsing instead of hanging forever and forcing the user to restart the app. */
     private var connectionTimeoutJob: Job? = null
 
-    /** Runs while browsing: see [forgetStalePeers]. */
-    private var stalePeerJob: Job? = null
+    /** Runs while browsing: [forgetStalePeers] and [rotateSessionId] on their own timers. */
+    private var browsingJob: Job? = null
 
     private fun newLink(address: String, isOutbound: Boolean): Link {
         val transport = object : FrameTransport {
@@ -129,7 +202,7 @@ class BleChatController(
             isInitiator = isOutbound,
             identity = identity,
             transport = transport,
-            localDeviceFingerprint = deviceFingerprint,
+            deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
             localProfile = { ProfileEnvelope.encode(context, profile) },
             isBlocked = { blockList.isBlocked(it) },
         )
@@ -138,8 +211,18 @@ class BleChatController(
 
     private fun activeLink(): Link? = activeAddress?.let { links[it] }
 
+    private fun newSessionId(): ByteArray = Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
+
     private fun startAdvertisingSession() {
-        peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
+        peripheral.start(newSessionId())
+    }
+
+    /** The advertised session id is what scanners see; if it stayed the same for hours while
+     *  "always visible" is on, it would link every one of Android's periodic Bluetooth address
+     *  rotations together and make this phone trackable. Swapped regularly - but never while a
+     *  chat is being set up or running, since the peer may still be dialing the old one. */
+    private fun rotateSessionId() {
+        if (activeAddress == null) peripheral.rotateSessionId(newSessionId())
     }
 
     private fun armConnectionTimeout(address: String) {
@@ -164,20 +247,24 @@ class BleChatController(
             if (enabled == browsing) return@launch
             browsing = enabled
             if (enabled) {
-                discoveredBySessionId.clear()
-                addressBySessionId.clear()
-                startAdvertisingSession()
-                central.startScanning()
-                _state.value = ChatUiState.Browsing(emptyList())
-                stalePeerJob = scope.launch {
-                    while (true) {
-                        delay(STALE_PEER_CHECK_MILLIS)
-                        forgetStalePeers()
+                if (bluetoothOn()) startRadios() else _state.value = ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+                browsingJob = scope.launch {
+                    launch {
+                        while (true) {
+                            delay(STALE_PEER_CHECK_MILLIS)
+                            forgetStalePeers()
+                        }
+                    }
+                    launch {
+                        while (true) {
+                            delay(SESSION_ROTATION_MILLIS)
+                            rotateSessionId()
+                        }
                     }
                 }
             } else {
-                stalePeerJob?.cancel()
-                stalePeerJob = null
+                browsingJob?.cancel()
+                browsingJob = null
                 central.stopScanning()
                 peripheral.stop()
                 endActive("stopped browsing")
@@ -231,9 +318,7 @@ class BleChatController(
             discoveredBySessionId.remove(it)
             addressBySessionId.remove(it)
         }
-        if (_state.value is ChatUiState.Browsing) {
-            _state.value = ChatUiState.Browsing(discoveredBySessionId.values.toList())
-        }
+        if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
     }
 
     override fun sendMessage(text: String) {
@@ -309,6 +394,12 @@ class BleChatController(
 
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
+    /** Files exchanged with someone who isn't a saved contact don't outlive the chat - the same
+     *  rule chat history follows (see [persistIfSaved]). */
+    private fun forgetMediaUnlessSaved(peerId: String?) {
+        if (peerId != null && !contactStore.isSaved(peerId)) mediaFileStore.delete(peerId)
+    }
+
     /** Chat history is only ever written to disk for peers the user chose to save as a
      *  contact - see [ChatHistoryStore]. */
     private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
@@ -329,30 +420,26 @@ class BleChatController(
 
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
+        forgetMediaUnlessSaved(activeLink()?.chat?.remotePeer?.peerId)
         disarmConnectionTimeout()
         activeAddress?.let { address -> links.remove(address)?.chat?.close() ?: peripheral.disconnectDevice(address) }
         activeAddress = null
         _transferStatus.value = null
         _state.value = ChatUiState.Ended(reason)
-        if (browsing) {
+        if (browsing && bluetoothOn()) {
             // The peer list may now be stale — a peer's session id rotates each time its own
             // peripheral restarts (including right after a connection attempt like this one
             // fails on its end too), so leftover entries here would otherwise just accumulate
             // as phantom "one more device" duplicates rather than being replaced. Start clean
             // and let scanning repopulate it.
-            discoveredBySessionId.clear()
-            addressBySessionId.clear()
-            peripheral.stop()
-            startAdvertisingSession()
-            central.startScanning()
-            _state.value = ChatUiState.Browsing(emptyList())
+            startRadios()
         }
     }
 
     override fun blockActivePeer() {
         scope.launch {
             val current = _state.value
-            if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint)
+            if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym)
             endActive("blocked")
         }
     }
@@ -360,7 +447,7 @@ class BleChatController(
     override fun reportActivePeer(reason: String) {
         scope.launch {
             val current = _state.value
-            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, reason)
+            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason)
             endActive("reported")
         }
     }
@@ -406,6 +493,31 @@ class BleChatController(
         scope.launch { handleFrame(deviceAddress, frame) }
     }
 
+    override fun onAdvertisingStarted() {
+        scope.launch {
+            advertisingWarning = null
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
+        }
+    }
+
+    override fun onAdvertisingFailed(errorCode: Int) {
+        scope.launch {
+            if (!bluetoothOn()) return@launch // reported as Paused instead
+            advertisingWarning = when (errorCode) {
+                AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED ->
+                    "This phone can't announce itself over Bluetooth, so others can't find you - you can still find them."
+                AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS ->
+                    "Too many apps are using Bluetooth announcements right now, so others can't find you."
+                else -> "Others can't find you right now (Bluetooth announcement failed, code $errorCode)."
+            }
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
+        }
+    }
+
+    override fun acknowledgeEnded() {
+        scope.launch { if (_state.value is ChatUiState.Ended) _state.value = ChatUiState.Idle }
+    }
+
     // ---- BleCentralClient.Listener (outbound / "we connected to someone") ----
 
     override fun onPeerDiscovered(deviceAddress: String, sessionId: ByteArray, rssi: Int) {
@@ -419,9 +531,7 @@ class BleChatController(
                 lastSeenAtMillis = System.currentTimeMillis(),
                 signalStrength = SignalStrength.Ble(rssi),
             )
-            if (_state.value is ChatUiState.Browsing) {
-                _state.value = ChatUiState.Browsing(discoveredBySessionId.values.toList())
-            }
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
         }
     }
 
@@ -500,6 +610,8 @@ class BleChatController(
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
         const val STALE_PEER_CHECK_MILLIS = 10_000L
         const val PEER_TTL_MILLIS = 30_000L
+        const val SESSION_ROTATION_MILLIS = 10 * 60_000L
+        const val BLUETOOTH_OFF_REASON = "Bluetooth is off - FRAD continues automatically once it's back on."
         const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }
 }

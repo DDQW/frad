@@ -16,7 +16,12 @@ import app.frad.chat.crypto.noise.Primitives
  * it never needs to know anything about the cryptography.
  */
 class ChatSession(private val isInitiator: Boolean, identity: Identity) {
-    private val handshake = NoiseXXHandshake(isInitiator, identity.privateKey, identity.publicKey)
+    private val handshake = NoiseXXHandshake(
+        isInitiator,
+        identity.privateKey,
+        identity.publicKey,
+        PROLOGUE.toByteArray(StandardCharsets.US_ASCII),
+    )
     private var transportKeys: NoiseTransportKeys? = null
 
     val isReady: Boolean
@@ -50,6 +55,9 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
         handshake.readMessage3(message3)
         transportKeys = handshake.split()
     }
+
+    /** The peer's long-term static public key, known once the handshake has revealed it. */
+    fun remoteStaticKey(): ByteArray = handshake.remoteStaticKey()
 
     /** Base64url-encoded SHA-256 of the peer's static key — stable across this conversation,
      *  usable for blocking, but never learnable by anyone merely scanning for nearby devices. */
@@ -89,5 +97,12 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
         val senderIsInitiator = outgoing == isInitiator
         val direction = if (senderIsInitiator) "i2r" else "r2i"
         return handshake.deriveKey("$transport|$direction|$transferId".toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private companion object {
+        /** Noise prologue: names the app and its chat protocol version. A peer speaking a
+         *  different version fails the handshake right away (as an authentication error) instead
+         *  of misinterpreting what follows. Bump it with any incompatible protocol change. */
+        const val PROLOGUE = "FRAD chat/2"
     }
 }

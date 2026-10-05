@@ -23,8 +23,17 @@ sealed interface ChatUiState {
     /** Broadcasting is off; nothing is happening. */
     data object Idle : ChatUiState
 
-    /** Opted in: advertising presence and scanning for others who are too. */
-    data class Browsing(val nearbyPeers: List<app.frad.chat.pairing.NearbyPeer>) : ChatUiState
+    /** Opted in: advertising presence and scanning for others who are too. [warning] says why
+     *  others may not be able to find us right now (e.g. advertising unsupported on this phone),
+     *  even though we can still find them. */
+    data class Browsing(
+        val nearbyPeers: List<app.frad.chat.pairing.NearbyPeer>,
+        val warning: String? = null,
+    ) : ChatUiState
+
+    /** Opted in, but the radio this layer needs is unavailable right now (e.g. Bluetooth is
+     *  switched off). Resumes on its own once it's back. */
+    data class Paused(val reason: String) : ChatUiState
 
     data class Connecting(val target: app.frad.chat.pairing.NearbyPeer) : ChatUiState
     data object Handshaking : ChatUiState

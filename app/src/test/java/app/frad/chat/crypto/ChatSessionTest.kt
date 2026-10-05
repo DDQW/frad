@@ -151,4 +151,15 @@ class ChatSessionTest {
         val second = run()
         assertNotEquals(String(first), String(second))
     }
+
+    @Test
+    fun `a peer with a different protocol prologue fails the handshake`() {
+        // Simulates an older/newer build: same Noise pattern, different prologue.
+        val (priv, pub) = Primitives.generateKeyPair()
+        val other = app.frad.chat.crypto.noise.NoiseXXHandshake(isInitiator = false, staticPrivateKey = priv, staticPublicKey = pub, prologue = "FRAD chat/1".toByteArray())
+        val alice = ChatSession(isInitiator = true, identity = randomIdentity())
+
+        val message2 = other.also { it.readMessage1(alice.startHandshake()) }.writeMessage2()
+        assertThrows(InvalidCipherTextException::class.java) { alice.completeHandshake(message2) }
+    }
 }

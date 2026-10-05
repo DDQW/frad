@@ -81,7 +81,7 @@ class WideRangeChatController(
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
-    private val deviceFingerprint = DeviceFingerprint.compute(context)
+    private val deviceSecret = DeviceFingerprint.deviceSecret(context)
 
     // Everything this controller does runs on this one serial dispatcher (stream I/O itself
     // suspends onto Dispatchers.IO inside WideRangeByteStream/WideRangeNode, freeing it
@@ -155,7 +155,7 @@ class WideRangeChatController(
             isInitiator = isInitiator,
             identity = identity,
             transport = transport,
-            localDeviceFingerprint = deviceFingerprint,
+            deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
             localProfile = { ProfileEnvelope.encode(context, profile) },
             isBlocked = { blockList.isBlocked(it) },
         )
@@ -388,6 +388,12 @@ class WideRangeChatController(
 
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
+    /** Files exchanged with someone who isn't a saved contact don't outlive the chat - the same
+     *  rule chat history follows (see [persistIfSaved]). */
+    private fun forgetMediaUnlessSaved(peerId: String?) {
+        if (peerId != null && !contactStore.isSaved(peerId)) mediaFileStore.delete(peerId)
+    }
+
     /** Chat history is only ever written to disk for peers the user chose to save as a
      *  contact - see [ChatHistoryStore], same rule [app.frad.chat.ble.BleChatController] follows. */
     private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
@@ -408,6 +414,7 @@ class WideRangeChatController(
 
     /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
     private fun endActive(reason: String) {
+        forgetMediaUnlessSaved(activeLink?.chat?.remotePeer?.peerId)
         disarmHandshakeTimeout()
         activeLink?.chat?.close()
         activeLink = null
@@ -421,7 +428,7 @@ class WideRangeChatController(
     override fun blockActivePeer() {
         scope.launch {
             val current = _state.value
-            if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint)
+            if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym)
             endActive("blocked")
         }
     }
@@ -429,9 +436,13 @@ class WideRangeChatController(
     override fun reportActivePeer(reason: String) {
         scope.launch {
             val current = _state.value
-            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, reason)
+            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason)
             endActive("reported")
         }
+    }
+
+    override fun acknowledgeEnded() {
+        scope.launch { if (_state.value is ChatUiState.Ended) _state.value = ChatUiState.Idle }
     }
 
     // ---- incoming libp2p streams ----

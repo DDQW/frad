@@ -42,18 +42,25 @@ object ProfileEnvelope {
         return json.toString()
     }
 
+    /** Upper bound on the photo a peer may send - [ProfilePhoto] thumbnails are a few KiB. */
+    const val MAX_PHOTO_BYTES = 16 * 1024
+
     /** Falls back to sensible defaults for any field a differently-versioned peer might not send,
-     *  rather than failing the whole chat over one missing/malformed field. */
+     *  rather than failing the whole chat over one missing/malformed field. Text is cleaned and
+     *  capped to the same limits our own profile has (see [TextSanitizer]), and an oversized
+     *  photo is dropped - all of it comes from a stranger. */
     fun decode(json: String): RemoteProfile {
         val obj = JSONObject(json)
         val gender = runCatching { Gender.valueOf(obj.optString(KEY_GENDER)) }.getOrDefault(Gender.MALE)
         val age = if (obj.has(KEY_AGE)) obj.optInt(KEY_AGE).takeIf { it in Profile.MIN_AGE..Profile.MAX_AGE } else null
-        val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
+        val photo = obj.optString(KEY_PHOTO, "").ifEmpty { null }
+            ?.takeIf { it.length <= (MAX_PHOTO_BYTES + 2) / 3 * 4 }
+            ?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
         return RemoteProfile(
-            pseudonym = obj.optString(KEY_PSEUDONYM, "Guest"),
+            pseudonym = TextSanitizer.pseudonym(obj.optString(KEY_PSEUDONYM, "")).ifEmpty { "Guest" },
             gender = gender,
             age = age,
-            bio = obj.optString(KEY_BIO, ""),
+            bio = TextSanitizer.clean(obj.optString(KEY_BIO, ""), Profile.MAX_BIO_LENGTH, allowNewlines = true),
             photo = photo,
         )
     }

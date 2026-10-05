@@ -10,9 +10,16 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import app.frad.chat.MainActivity
 import app.frad.chat.R
 import app.frad.chat.chat.ChatController
+import app.frad.chat.chat.ChatUiState
 import app.frad.chat.crypto.Identity
 import app.frad.chat.profile.Profile
 
@@ -32,7 +39,8 @@ import app.frad.chat.profile.Profile
  *    foreground service with a persistent, honest notification - required by Android for any
  *    background work like this, and exactly the point: never a silent background broadcast -
  *    that survives after the UI unbinds. This is what [Profile.alwaysVisible] uses so the app is
- *    actually reachable without being kept open on-screen.
+ *    actually reachable without being kept open on-screen. The notification follows the
+ *    controller's state and has a one-tap "Turn off".
  */
 class LocalBleService : Service() {
     inner class LocalBinder : Binder() {
@@ -41,32 +49,58 @@ class LocalBleService : Service() {
 
     private val binder = LocalBinder()
     private lateinit var controller: BleChatController
+    private lateinit var profile: Profile
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var notificationUpdates: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         val identity = Identity.loadOrCreate(applicationContext)
-        val profile = Profile(applicationContext)
+        profile = Profile(applicationContext)
         controller = BleChatController(applicationContext, identity, profile)
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_GO_VISIBLE) {
-            startForeground(NOTIFICATION_ID, buildNotification())
-            controller.setBrowsing(true)
-        } else if (intent?.action == ACTION_STOP_FOREGROUND) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+        when (intent?.action) {
+            ACTION_GO_VISIBLE -> {
+                startForeground(NOTIFICATION_ID, buildNotification(controller.state.value))
+                controller.setBrowsing(true)
+                followStateInNotification()
+            }
+            ACTION_STOP_FOREGROUND -> leaveForeground()
+            ACTION_TURN_OFF -> {
+                // The notification's "Turn off": same as switching "always visible" off in Profile.
+                profile.alwaysVisible = false
+                controller.setBrowsing(false)
+                leaveForeground()
+            }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        controller.setBrowsing(false)
+        serviceScope.cancel()
+        controller.close()
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun leaveForeground() {
+        notificationUpdates?.cancel()
+        notificationUpdates = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun followStateInNotification() {
+        if (notificationUpdates != null) return
+        val manager = getSystemService(NotificationManager::class.java)
+        notificationUpdates = serviceScope.launch {
+            controller.state.collect { state -> manager.notify(NOTIFICATION_ID, buildNotification(state)) }
+        }
+    }
+
+    private fun buildNotification(state: ChatUiState): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(CHANNEL_ID, "FRAD visibility", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Shown whenever FRAD is discoverable to people nearby, including in the background."
@@ -77,14 +111,28 @@ class LocalBleService : Service() {
             this,
             0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
+            FLAG_IMMEDIATE_OR_UPDATE,
         )
+        val turnOff = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, LocalBleService::class.java).setAction(ACTION_TURN_OFF),
+            FLAG_IMMEDIATE_OR_UPDATE,
+        )
+        val (title, text) = when (state) {
+            is ChatUiState.Paused -> "FRAD is paused" to "Bluetooth is off - continues once it's back on"
+            is ChatUiState.Connecting, ChatUiState.Handshaking -> "FRAD is connecting" to "Someone nearby is starting a chat - tap to open"
+            is ChatUiState.Chatting -> "FRAD: chatting" to "You're in a chat - tap to open FRAD"
+            else -> "FRAD is looking for friends" to "Visible to people nearby - tap to open FRAD"
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("FRAD is looking for friends")
-            .setContentText("Visible to people nearby - tap to open FRAD")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openApp)
+            .addAction(0, "Turn off", turnOff)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
@@ -92,8 +140,12 @@ class LocalBleService : Service() {
     companion object {
         const val ACTION_GO_VISIBLE = "app.frad.chat.action.GO_VISIBLE"
         const val ACTION_STOP_FOREGROUND = "app.frad.chat.action.STOP_FOREGROUND"
+        private const val ACTION_TURN_OFF = "app.frad.chat.action.TURN_OFF"
         private const val CHANNEL_ID = "frad_visibility"
         private const val NOTIFICATION_ID = 1
+
+        /** Immutable, and refreshed in place when the notification is rebuilt. */
+        private const val FLAG_IMMEDIATE_OR_UPDATE = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 
         /** Promotes the service to a persistent foreground one and turns local BLE browsing on -
          *  see [Profile.alwaysVisible]. */

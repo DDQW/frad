@@ -22,6 +22,7 @@ internal class NoiseXXHandshake(
     private val isInitiator: Boolean,
     private val staticPrivateKey: ByteArray,
     private val staticPublicKey: ByteArray,
+    prologue: ByteArray,
 ) {
     private companion object {
         const val PROTOCOL_NAME = "Noise_XX_25519_ChaChaPoly_SHA256"
@@ -37,7 +38,9 @@ internal class NoiseXXHandshake(
     private var remoteStaticPublicKey: ByteArray? = null
 
     init {
-        symmetric.mixHash(ByteArray(0)) // empty prologue
+        // Both sides must use the same prologue or the handshake fails authentication - which is
+        // the point: it binds the whole transcript to this app and protocol version.
+        symmetric.mixHash(prologue)
     }
 
     /** These bytes come straight off the wire from an unauthenticated peer: reject a truncated

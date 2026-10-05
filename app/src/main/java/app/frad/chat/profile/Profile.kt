@@ -26,8 +26,8 @@ class Profile(context: Context) {
             return generated
         }
         set(value) {
-            val trimmed = value.trim().take(MAX_LENGTH)
-            prefs.edit().putString(KEY_PSEUDONYM, trimmed.ifEmpty { defaultPseudonym() }).apply()
+            val cleaned = TextSanitizer.pseudonym(value)
+            prefs.edit().putString(KEY_PSEUDONYM, cleaned.ifEmpty { defaultPseudonym() }).apply()
         }
 
     private fun defaultPseudonym(): String = "Guest${Random.nextInt(1000, 10000)}"
@@ -97,7 +97,7 @@ class Profile(context: Context) {
     /** Optional short free-text description, shown to whoever you match with. */
     var bio: String
         get() = prefs.getString(KEY_BIO, null) ?: ""
-        set(value) { prefs.edit().putString(KEY_BIO, value.trim().take(MAX_BIO_LENGTH)).apply() }
+        set(value) { prefs.edit().putString(KEY_BIO, TextSanitizer.clean(value, MAX_BIO_LENGTH, allowNewlines = true)).apply() }
 
     companion object {
         private const val PREFS_FILE = "frad_profile"

@@ -35,6 +35,13 @@ class BlePeripheralServer(
         fun onCentralConnected(deviceAddress: String)
         fun onCentralDisconnected(deviceAddress: String)
         fun onFrameReceived(deviceAddress: String, frame: ByteArray)
+
+        /** Advertising is up: others can find us. */
+        fun onAdvertisingStarted()
+
+        /** Advertising couldn't start ([errorCode] is an AdvertiseCallback.ADVERTISE_FAILED_*
+         *  constant): we can still find others, but nobody can find us. */
+        fun onAdvertisingFailed(errorCode: Int)
     }
 
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -91,6 +98,24 @@ class BlePeripheralServer(
                 server.addService(service)
             }
 
+            startAdvertisingLocked(sessionId)
+        }
+    }
+
+    /** Swaps the advertised session id without touching the GATT server, so a connection that's
+     *  just being set up isn't cut off - see BleChatController's periodic rotation. */
+    fun rotateSessionId(sessionId: ByteArray) {
+        synchronized(lock) {
+            require(sessionId.size <= GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
+            if (gattServer == null) return // not running
+            advertiser?.stopAdvertising(advertiseCallback)
+            startAdvertisingLocked(sessionId)
+        }
+    }
+
+    /** Caller holds [lock]. */
+    private fun startAdvertisingLocked(sessionId: ByteArray) {
+        run {
             advertiser = adapter?.bluetoothLeAdvertiser
             val settings = AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
@@ -107,7 +132,13 @@ class BlePeripheralServer(
                 .addServiceData(ParcelUuid(GattProfile.SERVICE_UUID), sessionId)
                 .build()
 
-            advertiser?.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
+            val activeAdvertiser = advertiser
+            if (activeAdvertiser == null) {
+                // No advertiser at all: Bluetooth is off, or this phone can't act as a BLE peripheral.
+                listener.onAdvertisingFailed(AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED)
+            } else {
+                activeAdvertiser.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
+            }
         }
     }
 
@@ -161,8 +192,13 @@ class BlePeripheralServer(
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+            listener.onAdvertisingStarted()
+        }
+
         override fun onStartFailure(errorCode: Int) {
             Log.w(TAG, "BLE advertising failed to start: error $errorCode")
+            if (errorCode != ADVERTISE_FAILED_ALREADY_STARTED) listener.onAdvertisingFailed(errorCode)
         }
     }
 

@@ -32,6 +32,7 @@ import app.frad.chat.crypto.Identity
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
+import app.frad.chat.safety.BlockEntry
 import app.frad.chat.safety.BlockList
 import app.frad.chat.wideradius.CoarseLocation
 import app.frad.chat.wideradius.Geohash
@@ -68,11 +69,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        mediaFileStore.purgeExcept(contactStore.all().map { it.peerId }.toSet())
         application.bindService(Intent(application, LocalBleService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     override fun onCleared() {
         super.onCleared()
+        // Wide-range lives with this ViewModel (unlike local BLE, which LocalBleService keeps
+        // running): left on, its libp2p host would keep advertising and accepting chats - and
+        // sending our profile to strangers - with no UI to show them, and the next ViewModel
+        // would start a second host next to it.
+        wideController.setBrowsing(false)
         getApplication<Application>().unbindService(serviceConnection)
     }
 
@@ -177,6 +184,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun requestRandomChat() { activeController?.requestRandomChat() }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
     fun endChat() { activeController?.endActiveConnection("you left") }
+    fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
     fun blockActivePeer() { activeController?.blockActivePeer() }
     fun reportActivePeer(reason: String) { activeController?.reportActivePeer(reason) }
 
@@ -228,6 +236,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun historyWith(peerId: String): List<ChatMessage> = historyStore.messagesFor(peerId)
 
-    fun blockedPeerIds(): List<String> = blockList.blockedIds().toList()
-    fun unblock(peerId: String) = blockList.unblock(peerId)
+    fun blockedEntries(): List<BlockEntry> = blockList.entries()
+    fun unblock(entry: BlockEntry) = blockList.unblock(entry.key)
 }

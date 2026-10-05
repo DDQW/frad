@@ -20,4 +20,8 @@ interface ChatController {
     fun endActiveConnection(reason: String)
     fun blockActivePeer()
     fun reportActivePeer(reason: String)
+
+    /** The user has seen an [ChatUiState.Ended] message shown while not browsing - go back to
+     *  [ChatUiState.Idle] so they can start again. */
+    fun acknowledgeEnded()
 }

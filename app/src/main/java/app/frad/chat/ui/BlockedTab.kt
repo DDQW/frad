@@ -1,6 +1,7 @@
 package app.frad.chat.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,10 +29,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.text.DateFormat
+import java.util.Date
+import app.frad.chat.profile.Profile
+import app.frad.chat.safety.BlockEntry
 
 @Composable
 internal fun BlockedTab(viewModel: ChatViewModel) {
-    var blocked by remember { mutableStateOf(viewModel.blockedPeerIds()) }
+    var blocked by remember { mutableStateOf(viewModel.blockedEntries()) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -44,7 +49,7 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
             EmptyState(Icons.Default.Block, "You haven't blocked anyone.")
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp)) {
-                items(blocked) { peerId ->
+                items(blocked, key = { it.key }) { entry ->
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -55,10 +60,10 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                         ) {
                             Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             Spacer(Modifier.width(12.dp))
-                            Text("${peerId.take(10)}…", modifier = Modifier.weight(1f))
+                            Column(modifier = Modifier.weight(1f)) { BlockEntryText(entry) }
                             IconButton(onClick = {
-                                viewModel.unblock(peerId)
-                                blocked = viewModel.blockedPeerIds()
+                                viewModel.unblock(entry)
+                                blocked = viewModel.blockedEntries()
                             }) {
                                 Icon(Icons.Default.LockOpen, contentDescription = "Unblock")
                             }
@@ -67,5 +72,17 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ColumnScope.BlockEntryText(entry: BlockEntry) {
+    Text(Profile.displayName(entry.pseudonym ?: "Unknown", entry.key), fontWeight = FontWeight.SemiBold)
+    val details = listOfNotNull(
+        if (entry.blockedAtMillis > 0) "Blocked " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(entry.blockedAtMillis)) else null,
+        entry.reason?.let { "reported: $it" },
+    )
+    if (details.isNotEmpty()) {
+        Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
