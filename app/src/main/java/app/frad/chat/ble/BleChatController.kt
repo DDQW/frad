@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import kotlin.random.Random
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,14 +15,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import app.frad.chat.chat.ChatController
+import app.frad.chat.chat.ChatEnvelope
+import app.frad.chat.chat.ChatEnvelopeJson
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
+import app.frad.chat.chat.FileOffer
+import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MAX_TRANSFER_FILE_BYTES
 import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.ChatSession
 import app.frad.chat.crypto.Identity
+import app.frad.chat.crypto.TransferCipher
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
@@ -34,7 +40,6 @@ import app.frad.chat.safety.DeviceFingerprint
 import app.frad.chat.safety.ReportFlow
 import app.frad.chat.wifidirect.WfdCredentials
 import app.frad.chat.wifidirect.WifiDirectTransferManager
-import org.json.JSONObject
 
 /**
  * Ties the BLE transport ([BlePeripheralServer] + [BleCentralClient]), the
@@ -66,7 +71,11 @@ class BleChatController(
     // the M3 milestone plan. Below that, file transfer is simply unavailable.
     private val transferManager: WifiDirectTransferManager? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiDirectTransferManager(context) else null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Last line of defense: a failure in a transfer/timeout coroutine is logged, never allowed to
+    // take down the whole app (the default for an uncaught coroutine exception on Android).
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "unexpected error", e) },
+    )
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     override val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -87,6 +96,10 @@ class BleChatController(
         var step: HandshakeStep = if (session.isReady) HandshakeStep.READY
         else if (isOutbound) HandshakeStep.EXPECT_MESSAGE_2 else HandshakeStep.EXPECT_MESSAGE_1
         var remoteDeviceFingerprint: String? = null
+
+        /** Every transfer id used in this chat, ours and the peer's - an offer reusing one is
+         *  refused, since its key (see [ChatSession.deriveTransferKey]) would repeat too. */
+        val seenTransferIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
     }
 
     // BLE callbacks (peripheral GATT server, central GATT client, scan results) can each
@@ -184,8 +197,9 @@ class BleChatController(
         val address = activeAddress ?: return
         val connection = connections[address] ?: return
         if (connection.step != HandshakeStep.READY) return
+        if (text.length > MAX_MESSAGE_CHARS) return
 
-        sendEnvelope(address, connection, JSONObject().put("k", "txt").put("t", text).toString())
+        sendEncrypted(address, connection, ChatEnvelopeJson.encode(ChatEnvelope.Text(text)))
         appendMessage(ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis()))
     }
 
@@ -202,11 +216,14 @@ class BleChatController(
         if (bytes.size > MAX_TRANSFER_FILE_BYTES) return
 
         val remotePeerId = connection.session.remotePeerId()
-        val transferKey = connection.session.deriveTransferKey()
+        val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+        connection.seenTransferIds.add(offer.transferId)
+        val transferKey = connection.session.deriveTransferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
         _transferStatus.value = "Sending $fileName…"
         scope.launch {
             val result = manager.hostAndSendFile(bytes, transferKey) { credentials ->
-                sendEnvelope(address, connection, encodeFileOffer(credentials, fileName, mimeType, bytes.size.toLong()))
+                val envelope = ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase)
+                sendEncrypted(address, connection, ChatEnvelopeJson.encode(envelope))
             }
             _transferStatus.value = null
             result.onSuccess {
@@ -216,15 +233,21 @@ class BleChatController(
         }
     }
 
-    private fun receiveFile(connection: Connection, offer: FileOffer) {
+    private fun receiveFile(connection: Connection, envelope: ChatEnvelope.WfdOffer) {
+        val offer = envelope.offer
         val manager = transferManager
         if (manager == null || _transferStatus.value != null || offer.sizeBytes > MAX_TRANSFER_FILE_BYTES) return
+        if (!connection.seenTransferIds.add(offer.transferId)) {
+            Log.w(TAG, "ignoring file offer reusing transfer id ${offer.transferId}")
+            return
+        }
 
         val remotePeerId = connection.session.remotePeerId()
-        val transferKey = connection.session.deriveTransferKey()
+        val transferKey = connection.session.deriveTransferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
+        val credentials = WfdCredentials(networkName = envelope.networkName, passphrase = envelope.passphrase)
         _transferStatus.value = "Receiving ${offer.fileName}…"
         scope.launch {
-            val result = manager.joinAndReceiveFile(offer.credentials, transferKey, offer.sizeBytes)
+            val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes)
             _transferStatus.value = null
             result.onSuccess { bytes ->
                 val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
@@ -246,22 +269,17 @@ class BleChatController(
 
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
-    private fun sendEnvelope(address: String, connection: Connection, json: String) {
-        val ciphertext = connection.session.encryptMessage(json)
-        if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
+    /** Encrypts [plaintext] and queues it to the peer as one atomic step. Callers run on the UI
+     *  thread (sending a message), a BLE binder thread (handshake replies) and a transfer
+     *  coroutine (file offers) - without the lock two of them could take nonces in one order but
+     *  enqueue the ciphertexts in the other, or race the nonce counter itself, and the peer's
+     *  strictly sequential decryption would fail. */
+    private fun sendEncrypted(address: String, connection: Connection, plaintext: String) {
+        synchronized(connection) {
+            val ciphertext = connection.session.encryptMessage(plaintext)
+            if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
+        }
     }
-
-    private data class FileOffer(val credentials: WfdCredentials, val fileName: String, val mimeType: String, val sizeBytes: Long)
-
-    private fun encodeFileOffer(credentials: WfdCredentials, fileName: String, mimeType: String, sizeBytes: Long): String =
-        JSONObject()
-            .put("k", "wfd")
-            .put("ssid", credentials.networkName)
-            .put("pass", credentials.passphrase)
-            .put("name", fileName)
-            .put("mime", mimeType)
-            .put("size", sizeBytes)
-            .toString()
 
     /** Chat history is only ever written to disk for peers the user chose to save as a
      *  contact - see [ChatHistoryStore]. */
@@ -341,7 +359,17 @@ class BleChatController(
         if (deviceAddress == activeAddress) endActiveConnection("peer disconnected")
     }
 
-    override fun onFrameReceived(deviceAddress: String, frame: ByteArray) = handleFrame(deviceAddress, frame)
+    /** Every frame comes from a peer that may be buggy or hostile - a truncated handshake message,
+     *  a ciphertext that fails authentication or a malformed envelope must end that one
+     *  connection, never escape into the BLE stack's binder thread. */
+    override fun onFrameReceived(deviceAddress: String, frame: ByteArray) {
+        try {
+            handleFrame(deviceAddress, frame)
+        } catch (e: Exception) {
+            Log.w(TAG, "dropping connection after bad frame from $deviceAddress", e)
+            abortConnection(deviceAddress, "connection error")
+        }
+    }
 
     // ---- BleCentralClient.Listener (outbound / "we connected to someone") ----
 
@@ -397,15 +425,12 @@ class BleChatController(
             HandshakeStep.EXPECT_DEVICE_ID -> {
                 val remoteFingerprint = connection.session.decryptMessage(frame)
                 if (blockList.isBlocked(remoteFingerprint)) {
-                    if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
-                    connections.remove(deviceAddress)
-                    endActiveConnection("blocked peer")
+                    abortConnection(deviceAddress, "blocked peer")
                     return
                 }
                 connection.remoteDeviceFingerprint = remoteFingerprint
                 connection.step = HandshakeStep.EXPECT_PROFILE
-                val ciphertext = connection.session.encryptMessage(ProfileEnvelope.encode(context, profile))
-                if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
+                sendEncrypted(deviceAddress, connection, ProfileEnvelope.encode(context, profile))
             }
             HandshakeStep.EXPECT_PROFILE -> {
                 val remoteProfile = ProfileEnvelope.decode(connection.session.decryptMessage(frame))
@@ -424,18 +449,10 @@ class BleChatController(
                 )
             }
             HandshakeStep.READY -> {
-                val envelope = JSONObject(connection.session.decryptMessage(frame))
-                when (envelope.getString("k")) {
-                    "wfd" -> receiveFile(
-                        connection,
-                        FileOffer(
-                            credentials = WfdCredentials(networkName = envelope.getString("ssid"), passphrase = envelope.getString("pass")),
-                            fileName = envelope.getString("name"),
-                            mimeType = envelope.getString("mime"),
-                            sizeBytes = envelope.getLong("size"),
-                        ),
-                    )
-                    else -> appendMessage(ChatMessage(fromMe = false, text = envelope.getString("t"), atMillis = System.currentTimeMillis()))
+                when (val envelope = ChatEnvelopeJson.decode(connection.session.decryptMessage(frame))) {
+                    is ChatEnvelope.Text -> appendMessage(ChatMessage(fromMe = false, text = envelope.text, atMillis = System.currentTimeMillis()))
+                    is ChatEnvelope.WfdOffer -> receiveFile(connection, envelope)
+                    is ChatEnvelope.WideOffer, is ChatEnvelope.Unknown -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
                 }
             }
         }
@@ -449,18 +466,24 @@ class BleChatController(
     private fun advanceToDeviceIdExchange(deviceAddress: String, connection: Connection) {
         val remotePeerId = connection.session.remotePeerId()
         if (blockList.isBlocked(remotePeerId)) {
-            if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
-            connections.remove(deviceAddress)
-            endActiveConnection("blocked peer")
+            abortConnection(deviceAddress, "blocked peer")
             return
         }
         connection.step = HandshakeStep.EXPECT_DEVICE_ID
-        val ciphertext = connection.session.encryptMessage(deviceFingerprint)
-        if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
+        sendEncrypted(deviceAddress, connection, deviceFingerprint)
+    }
+
+    /** Drops one connection from our side - a blocked peer or a protocol error - and, if it was
+     *  the active chat, ends that too. */
+    private fun abortConnection(deviceAddress: String, reason: String) {
+        val connection = connections.remove(deviceAddress)
+        if (connection?.isOutbound == true) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
+        if (deviceAddress == activeAddress) endActiveConnection(reason)
     }
 
     private companion object {
         const val TAG = "BleChatController"
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
+        const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }
 }

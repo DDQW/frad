@@ -40,6 +40,12 @@ internal class NoiseXXHandshake(
         symmetric.mixHash(ByteArray(0)) // empty prologue
     }
 
+    /** These bytes come straight off the wire from an unauthenticated peer: reject a truncated
+     *  message up front with a clear error instead of an out-of-bounds copy further down. */
+    private fun requireLength(message: ByteArray, minLength: Int, name: String) {
+        require(message.size >= minLength) { "Handshake $name too short: ${message.size} < $minLength bytes" }
+    }
+
     private fun generateEphemeral() {
         val (priv, pub) = Primitives.generateKeyPair()
         ephemeralPrivateKey = priv
@@ -58,6 +64,7 @@ internal class NoiseXXHandshake(
 
     fun readMessage1(message: ByteArray) {
         check(!isInitiator)
+        requireLength(message, PUB_LEN, "message 1")
         remoteEphemeralPublicKey = message.copyOfRange(0, PUB_LEN)
         symmetric.mixHash(remoteEphemeralPublicKey!!)
         symmetric.decryptAndHash(message.copyOfRange(PUB_LEN, message.size))
@@ -79,6 +86,7 @@ internal class NoiseXXHandshake(
     /** @return the remote party's static public key, learned from this message. */
     fun readMessage2(message: ByteArray): ByteArray {
         check(isInitiator)
+        requireLength(message, PUB_LEN + PUB_LEN + TAG_LEN + TAG_LEN, "message 2")
         var offset = 0
         remoteEphemeralPublicKey = message.copyOfRange(offset, PUB_LEN).also { offset += PUB_LEN }
         symmetric.mixHash(remoteEphemeralPublicKey!!)
@@ -106,6 +114,7 @@ internal class NoiseXXHandshake(
     /** @return the remote party's static public key, learned from this message. */
     fun readMessage3(message: ByteArray): ByteArray {
         check(!isInitiator)
+        requireLength(message, PUB_LEN + TAG_LEN + TAG_LEN, "message 3")
         val sCiphertext = message.copyOfRange(0, PUB_LEN + TAG_LEN)
         val rs = symmetric.decryptAndHash(sCiphertext) // s
         remoteStaticPublicKey = rs

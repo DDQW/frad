@@ -186,7 +186,13 @@ class BleCentralClient(
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (characteristic.uuid != GattProfile.OUTBOX_CHARACTERISTIC_UUID) return
             val connection = connections[gatt.device.address] ?: return
-            val complete = connection.reassembler.offer(characteristic.value ?: return)
+            val complete = try {
+                connection.reassembler.offer(characteristic.value ?: return)
+            } catch (e: FrameTooLargeException) {
+                Log.w(TAG, "dropping ${gatt.device.address}: ${e.message}")
+                gatt.disconnect()
+                return
+            }
             if (complete != null) {
                 listener.onFrameReceived(gatt.device.address, complete)
             }

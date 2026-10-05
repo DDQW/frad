@@ -1,9 +1,12 @@
 package app.frad.chat.wideradius
 
 import android.content.Context
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,10 +20,16 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import app.frad.chat.ble.FrameTooLargeException
 import app.frad.chat.ble.FrameWriter
+import app.frad.chat.ble.MAX_FRAME_BYTES
 import app.frad.chat.chat.ChatController
+import app.frad.chat.chat.ChatEnvelope
+import app.frad.chat.chat.ChatEnvelopeJson
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
+import app.frad.chat.chat.FileOffer
+import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MAX_TRANSFER_FILE_BYTES
 import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.ChatHistoryStore
@@ -40,7 +49,6 @@ import app.frad.chat.safety.BlockList
 import app.frad.chat.safety.Cooldown
 import app.frad.chat.safety.DeviceFingerprint
 import app.frad.chat.safety.ReportFlow
-import org.json.JSONObject
 
 /**
  * The M4 wide-range counterpart to [app.frad.chat.ble.BleChatController]: the same
@@ -73,7 +81,11 @@ class WideRangeChatController(
     private val matcher = RandomMatcher()
     private val deviceFingerprint = DeviceFingerprint.compute(context)
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Last line of defense: a failure in any of this controller's coroutines is logged, never
+    // allowed to take down the whole app (the default for an uncaught coroutine exception).
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "unexpected error", e) },
+    )
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     override val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -94,6 +106,10 @@ class WideRangeChatController(
         var pendingIncomingOffer: FileOffer? = null
         var remoteDeviceFingerprint: String? = null
 
+        /** Every transfer id used in this chat, ours and the peer's - an offer reusing one is
+         *  refused, since its key (see [ChatSession.deriveTransferKey]) would repeat too. */
+        val seenTransferIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
         /** Guards writes to [stream]: the read loop (handshake responses, profile exchange)
          *  and [sendMessage]/[sendFile] (launched from the UI thread) can both want to write
          *  to the same chat stream at once - unlike BLE's fire-and-forget GATT writes, this
@@ -101,14 +117,33 @@ class WideRangeChatController(
         val writeMutex = Mutex()
     }
 
-    private data class FileOffer(val fileName: String, val mimeType: String, val sizeBytes: Long)
-
     private val discoveredByPeerId = java.util.Collections.synchronizedMap(mutableMapOf<String, NearbyPeer>())
-    private var activeConnection: Connection? = null
+    @Volatile private var activeConnection: Connection? = null
     private var browsing = false
     private var discoveryJob: Job? = null
     private var incomingStreamJob: Job? = null
     private var findPeersJob: Job? = null
+
+    /** The wide-range counterpart to BLE's connection timeout: without it, a peer that opens a
+     *  chat stream and then never finishes the handshake would hold [activeConnection] - and with
+     *  it every other incoming chat request, see [onIncomingStream] - for as long as it likes. */
+    private var handshakeTimeoutJob: Job? = null
+
+    private fun armHandshakeTimeout(stillPending: () -> Boolean) {
+        handshakeTimeoutJob?.cancel()
+        handshakeTimeoutJob = scope.launch {
+            delay(HANDSHAKE_TIMEOUT_MILLIS)
+            if (stillPending()) {
+                Log.w(TAG, "chat setup timed out, state=${_state.value}")
+                endActiveConnection("connection timed out")
+            }
+        }
+    }
+
+    private fun disarmHandshakeTimeout() {
+        handshakeTimeoutJob?.cancel()
+        handshakeTimeoutJob = null
+    }
 
     private fun rendezvousTopic(): String {
         val geohash = profile.coarseGeohash ?: error("No coarse location set")
@@ -192,24 +227,38 @@ class WideRangeChatController(
         if (!cooldown.canRequest(picked.sessionId)) return
         cooldown.recordRequest(picked.sessionId)
 
-        _state.value = ChatUiState.Connecting(picked)
+        val connecting = ChatUiState.Connecting(picked)
+        _state.value = connecting
+        armHandshakeTimeout { _state.value === connecting }
         scope.launch {
             val stream = node.openStream(picked.sessionId, CHAT_PROTOCOL_ID).getOrElse {
-                endActiveConnection("couldn't reach that peer")
+                if (_state.value === connecting) endActiveConnection("couldn't reach that peer")
+                return@launch
+            }
+            // Gave up waiting meanwhile (timeout), or an incoming chat got there first.
+            if (_state.value !== connecting || activeConnection != null) {
+                stream.close()
                 return@launch
             }
             val connection = Connection(ChatSession(isInitiator = true, identity = identity), isOutbound = true, stream = stream)
             activeConnection = connection
             _state.value = ChatUiState.Handshaking
+            armHandshakeTimeout { activeConnection === connection && connection.step != HandshakeStep.READY }
             startReadLoop(connection)
-            sendRaw(connection, connection.session.startHandshake())
+            try {
+                sendRaw(connection, connection.session.startHandshake())
+            } catch (e: Exception) {
+                Log.w(TAG, "couldn't send handshake", e)
+                if (activeConnection === connection) endActiveConnection("peer disconnected")
+            }
         }
     }
 
     override fun sendMessage(text: String) {
         val connection = activeConnection ?: return
         if (connection.step != HandshakeStep.READY) return
-        val json = JSONObject().put("k", "txt").put("t", text).toString()
+        if (text.length > MAX_MESSAGE_CHARS) return
+        val json = ChatEnvelopeJson.encode(ChatEnvelope.Text(text))
         scope.launch {
             runCatching { sendEncrypted(connection, json) }
                 .onFailure { if (activeConnection === connection) endActiveConnection("peer disconnected") }
@@ -230,13 +279,15 @@ class WideRangeChatController(
 
         val remotePeerId = connection.session.remotePeerId()
         val remoteLibp2pPeerId = connection.stream.remotePeerId
-        val transferKey = connection.session.deriveTransferKey(WIDE_TRANSFER_KEY_INFO)
+        val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+        connection.seenTransferIds.add(offer.transferId)
+        val transferKey = connection.session.deriveTransferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
         _transferStatus.value = "Sending $fileName…"
         scope.launch {
             val result = runCatching {
                 val transferStream = node.openStream(remoteLibp2pPeerId, TRANSFER_PROTOCOL_ID).getOrThrow()
                 try {
-                    sendEncrypted(connection, encodeFileOffer(fileName, mimeType, bytes.size.toLong()))
+                    sendEncrypted(connection, ChatEnvelopeJson.encode(ChatEnvelope.WideOffer(offer)))
                     writeChunked(bytes, TransferCipher(transferKey)) { transferStream.write(it).getOrThrow() }
                 } finally {
                     transferStream.close()
@@ -256,7 +307,7 @@ class WideRangeChatController(
             return
         }
         val remotePeerId = connection.session.remotePeerId()
-        val transferKey = connection.session.deriveTransferKey(WIDE_TRANSFER_KEY_INFO)
+        val transferKey = connection.session.deriveTransferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
         _transferStatus.value = "Receiving ${offer.fileName}…"
         scope.launch {
             val result = runCatching {
@@ -282,9 +333,6 @@ class WideRangeChatController(
         localPath = localPath,
     )
 
-    private fun encodeFileOffer(fileName: String, mimeType: String, sizeBytes: Long): String =
-        JSONObject().put("k", "wide-transfer").put("name", fileName).put("mime", mimeType).put("size", sizeBytes).toString()
-
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
     /** Chat history is only ever written to disk for peers the user chose to save as a
@@ -302,6 +350,7 @@ class WideRangeChatController(
     }
 
     override fun endActiveConnection(reason: String) {
+        disarmHandshakeTimeout()
         activeConnection?.stream?.close()
         activeConnection = null
         _transferStatus.value = null
@@ -335,6 +384,7 @@ class WideRangeChatController(
                 val connection = Connection(ChatSession(isInitiator = false, identity = identity), isOutbound = false, stream = stream)
                 activeConnection = connection
                 _state.value = ChatUiState.Handshaking
+                armHandshakeTimeout { activeConnection === connection && connection.step != HandshakeStep.READY }
                 startReadLoop(connection)
             }
             TRANSFER_PROTOCOL_ID -> {
@@ -356,10 +406,29 @@ class WideRangeChatController(
         scope.launch {
             while (isActive) {
                 val frame = readFrame(connection.stream).getOrElse {
+                    if (it is FrameTooLargeException) Log.w(TAG, "dropping peer: ${it.message}")
                     if (activeConnection === connection) endActiveConnection("peer disconnected")
                     return@launch
                 }
-                handleFrame(connection, frame)
+                // Timed out or otherwise ended while this frame was in flight - don't let it
+                // resurrect a chat that's already gone.
+                if (activeConnection !== connection) {
+                    connection.stream.close()
+                    return@launch
+                }
+                // Every frame comes from a peer that may be buggy or hostile - a truncated handshake
+                // message, a ciphertext that fails authentication or a malformed envelope must end
+                // this one chat, never escape and crash the app.
+                try {
+                    handleFrame(connection, frame)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "dropping connection after bad frame", e)
+                    connection.stream.close()
+                    if (activeConnection === connection) endActiveConnection("connection error")
+                    return@launch
+                }
             }
         }
     }
@@ -394,6 +463,7 @@ class WideRangeChatController(
             HandshakeStep.EXPECT_PROFILE -> {
                 val remoteProfile = ProfileEnvelope.decode(connection.session.decryptMessage(frame))
                 connection.step = HandshakeStep.READY
+                disarmHandshakeTimeout()
                 val remotePeerId = connection.session.remotePeerId()
                 _state.value = ChatUiState.Chatting(
                     remotePeerId = remotePeerId,
@@ -407,14 +477,16 @@ class WideRangeChatController(
                 )
             }
             HandshakeStep.READY -> {
-                val envelope = JSONObject(connection.session.decryptMessage(frame))
-                when (envelope.getString("k")) {
-                    "wide-transfer" -> connection.pendingIncomingOffer = FileOffer(
-                        fileName = envelope.getString("name"),
-                        mimeType = envelope.getString("mime"),
-                        sizeBytes = envelope.getLong("size"),
-                    )
-                    else -> appendMessage(ChatMessage(fromMe = false, text = envelope.getString("t"), atMillis = System.currentTimeMillis()))
+                when (val envelope = ChatEnvelopeJson.decode(connection.session.decryptMessage(frame))) {
+                    is ChatEnvelope.Text -> appendMessage(ChatMessage(fromMe = false, text = envelope.text, atMillis = System.currentTimeMillis()))
+                    is ChatEnvelope.WideOffer -> {
+                        if (connection.seenTransferIds.add(envelope.offer.transferId)) {
+                            connection.pendingIncomingOffer = envelope.offer
+                        } else {
+                            Log.w(TAG, "ignoring file offer reusing transfer id ${envelope.offer.transferId}")
+                        }
+                    }
+                    is ChatEnvelope.WfdOffer, is ChatEnvelope.Unknown -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
                 }
             }
         }
@@ -445,8 +517,11 @@ class WideRangeChatController(
         connection.stream.write(framed).getOrThrow()
     }
 
+    /** Fails with [FrameTooLargeException] before allocating anything if the (still
+     *  unauthenticated) peer announces a length outside 0..[MAX_FRAME_BYTES]. */
     private suspend fun readFrame(stream: WideRangeByteStream): Result<ByteArray> = runCatching {
         val length = ByteBuffer.wrap(stream.readExactly(4).getOrThrow()).order(ByteOrder.BIG_ENDIAN).int
+        if (length !in 0..MAX_FRAME_BYTES) throw FrameTooLargeException(length, MAX_FRAME_BYTES)
         stream.readExactly(length).getOrThrow()
     }
 
@@ -461,7 +536,9 @@ class WideRangeChatController(
     companion object {
         const val CHAT_PROTOCOL_ID = "/frad/chat/1.0.0"
         const val TRANSFER_PROTOCOL_ID = "/frad/transfer/1.0.0"
-        private const val WIDE_TRANSFER_KEY_INFO = "frad-wide-transfer-v1"
+        private const val TAG = "WideRangeChatController"
+        private const val WIDE_TRANSFER_KEY_INFO = "frad-wide-transfer-v2"
         private const val FIND_PEERS_INTERVAL_MILLIS = 30_000L
+        private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
     }
 }

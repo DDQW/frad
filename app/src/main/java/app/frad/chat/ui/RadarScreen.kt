@@ -105,6 +105,7 @@ import java.io.File
 import kotlinx.coroutines.launch
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
+import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.Contact
 import app.frad.chat.media.AudioRecorder
@@ -586,7 +587,7 @@ private fun ChatContent(
                     } else {
                         OutlinedTextField(
                             value = draft,
-                            onValueChange = { draft = it },
+                            onValueChange = { draft = it.take(MAX_MESSAGE_CHARS) },
                             modifier = Modifier.weight(1f),
                             placeholder = { Text("Message") },
                             shape = RoundedCornerShape(24.dp),

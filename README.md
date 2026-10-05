@@ -92,7 +92,9 @@ you have it, or ask in an issue — the summary above is the durable version.
   name/passphrase relayed over the already-encrypted BLE channel) and stream
   the file over a socket, encrypted with a key derived from that same chat's
   Noise session — never the chat's own message key, so a concurrent text
-  message and file transfer can't collide on one nonce counter. Received
+  message and file transfer can't collide on one nonce counter, and a fresh
+  key per file and direction, so two transfers in one chat can't either.
+  Received
   files are auto-accepted (same trust model as text messages) and shown
   inline if they're an image, or as a name/size chip with an "Open" button
   otherwise. Below API 29, the attach button doesn't appear — BLE text chat
@@ -225,21 +227,27 @@ in and a reachable bootstrap node configured in Profile on both phones.
 ## Project layout
 
 - `chat/` — transport-neutral chat types (`ChatUiState`, `ChatMessage`,
-  `MessageKind`) and the `ChatController` interface both `BleChatController`
+  `MessageKind`), the `ChatController` interface both `BleChatController`
   and `WideRangeChatController` implement, so `ui/` only ever talks to
-  "whichever discovery layer is active right now."
+  "whichever discovery layer is active right now," and `ChatEnvelope`, the
+  encrypted post-handshake message format both share (unknown message kinds
+  from a newer peer are ignored rather than treated as errors).
 - `crypto/` — identity keypair + the Noise_XX end-to-end encryption handshake
   and session. Transport-agnostic; reused as-is by the wide-range layer.
   `TransferCipher` encrypts a file transfer with a key derived from the
-  chat's Noise session (`ChatSession.deriveTransferKey`, a different info
-  string per transport) but independent of the chat's own message key;
+  chat's Noise session (`ChatSession.deriveTransferKey`) but independent of
+  the chat's own message key. Since its nonce counter always starts at 0,
+  that key is unique per transfer: the transport, the direction and a random
+  transfer id the sender puts in its file offer are all mixed in (offers
+  without one, i.e. from builds before 0.3.23, are rejected);
   `ChunkedTransfer` frames those encrypted chunks over a plain suspend
   read/write callback (used by the wide-range layer; `WifiDirectTransferManager`
   keeps its own copy of this logic over a `java.io` socket).
 - `ble/` — BLE presence advertising/scanning (`BlePeripheralServer`,
   `BleCentralClient`), message fragmentation over the GATT MTU (`Framing`,
   also reused by the wide-range layer's framing, just never split into more
-  than one piece), `BleChatController`, which wires all of the above plus
+  than one piece; frames from a peer are capped at `MAX_FRAME_BYTES`, and a
+  malformed one ends that connection instead of crashing the app), `BleChatController`, which wires all of the above plus
   pairing/safety and Wi-Fi Direct file-transfer orchestration into the state
   machine the UI drives, and `LocalBleService`, the foreground service that
   hosts that controller outside any Activity/ViewModel lifecycle so it can

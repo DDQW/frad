@@ -76,29 +76,60 @@ class ChatSessionTest {
     }
 
     @Test
-    fun `both sides derive the same transfer key, independent of the chat's own messages`() {
+    fun `sender and receiver derive the same transfer key, independent of the chat's own messages`() {
         val h = handshake()
+        val id = TransferCipher.newTransferId()
 
-        assertArrayEquals(h.alice.deriveTransferKey(), h.bob.deriveTransferKey())
+        assertArrayEquals(
+            h.alice.deriveTransferKey("frad-wfd-media-v2", id, outgoing = true),
+            h.bob.deriveTransferKey("frad-wfd-media-v2", id, outgoing = false),
+        )
 
         // Encrypting a chat message must not perturb the derived transfer key - the two are
         // meant to be independent so a concurrent BLE message and Wi-Fi Direct file transfer
         // can't collide on one nonce counter (see ChatSession.deriveTransferKey).
         h.alice.encryptMessage("hello")
-        assertArrayEquals(h.alice.deriveTransferKey(), h.bob.deriveTransferKey())
+        assertArrayEquals(
+            h.alice.deriveTransferKey("frad-wfd-media-v2", id, outgoing = true),
+            h.bob.deriveTransferKey("frad-wfd-media-v2", id, outgoing = false),
+        )
     }
 
     @Test
-    fun `different transfer key info strings derive different, non-colliding keys`() {
+    fun `every transfer, direction and transport gets its own key`() {
+        // TransferCipher always starts its nonce counter at 0, so any two transfers sharing a key
+        // would reuse (key, nonce) pairs - the bug this test guards against.
         val h = handshake()
+        val first = TransferCipher.newTransferId()
+        val second = TransferCipher.newTransferId()
 
-        val wfdKey = h.alice.deriveTransferKey("frad-wfd-media-v1")
-        val wideKey = h.alice.deriveTransferKey("frad-wide-transfer-v1")
+        val keys = listOf(
+            h.alice.deriveTransferKey("frad-wfd-media-v2", first, outgoing = true),
+            h.alice.deriveTransferKey("frad-wfd-media-v2", second, outgoing = true),
+            // Same id, other direction (Bob sending to Alice).
+            h.bob.deriveTransferKey("frad-wfd-media-v2", first, outgoing = true),
+            // Same id and direction, other transport.
+            h.alice.deriveTransferKey("frad-wide-transfer-v2", first, outgoing = true),
+        )
+        assertEquals(keys.size, keys.map { it.toList() }.toSet().size)
+    }
 
-        assertNotEquals(String(wfdKey), String(wideKey))
-        // Still identical on both sides for a given info string.
-        assertArrayEquals(wfdKey, h.bob.deriveTransferKey("frad-wfd-media-v1"))
-        assertArrayEquals(wideKey, h.bob.deriveTransferKey("frad-wide-transfer-v1"))
+    @Test
+    fun `transfer ids are random and url-safe`() {
+        val ids = List(100) { TransferCipher.newTransferId() }
+        assertEquals(ids.size, ids.toSet().size)
+        assertTrue(ids.all { id -> id.length == 22 && id.all { it.isLetterOrDigit() || it == '-' || it == '_' } })
+    }
+
+    @Test
+    fun `truncated handshake messages are rejected up front instead of overrunning the buffer`() {
+        val alice = ChatSession(isInitiator = true, identity = randomIdentity())
+        val bob = ChatSession(isInitiator = false, identity = randomIdentity())
+
+        assertThrows(IllegalArgumentException::class.java) { bob.respondToHandshake(ByteArray(10)) }
+
+        alice.startHandshake()
+        assertThrows(IllegalArgumentException::class.java) { alice.completeHandshake(ByteArray(40)) }
     }
 
     @Test

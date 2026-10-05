@@ -68,17 +68,26 @@ class ChatSession(private val isInitiator: Boolean, identity: Identity) {
         return String(keys.decrypt(ciphertext), StandardCharsets.UTF_8)
     }
 
-    /** A 32-byte secret independent of the chat's own transport keys, for encrypting a
+    /** A 32-byte secret independent of the chat's own transport keys, for encrypting one
      *  side-channel file transfer (see [app.frad.chat.crypto.TransferCipher]) instead of
      *  reusing the chat's [encryptMessage]/[decryptMessage] nonce counter, which two concurrent
      *  transports incrementing independently could otherwise collide on. Identical on both sides,
      *  since it's derived from the mutually-authenticated handshake transcript.
      *
-     *  [info] must be distinct per file-transfer transport (Wi-Fi Direct vs. wide-range) sharing
-     *  this same handshake, so the two never derive the same key from one conversation - see
-     *  [app.frad.chat.wideradius.WideRangeChatController]'s use of a different [info]. */
-    fun deriveTransferKey(info: String = "frad-wfd-media-v1"): ByteArray {
+     *  Every [TransferCipher] starts its nonce counter at 0, so this key must never be reused
+     *  across transfers: [transferId] (a fresh [TransferCipher.newTransferId] the sender puts in
+     *  its file offer) makes it unique per file, and the direction is mixed in as well so a file
+     *  each way can't share one key either. [outgoing] is true on the sending side and false on
+     *  the receiving side - both then derive the same key for the same transfer.
+     *
+     *  [transport] must be distinct per file-transfer transport (Wi-Fi Direct vs. wide-range)
+     *  sharing this same handshake - see [app.frad.chat.wideradius.WideRangeChatController]'s
+     *  use of a different one. */
+    fun deriveTransferKey(transport: String, transferId: String, outgoing: Boolean): ByteArray {
         check(isReady) { "Handshake not complete" }
-        return handshake.deriveKey(info.toByteArray(StandardCharsets.US_ASCII))
+        require(transferId.isNotEmpty()) { "Empty transfer id" }
+        val senderIsInitiator = outgoing == isInitiator
+        val direction = if (senderIsInitiator) "i2r" else "r2i"
+        return handshake.deriveKey("$transport|$direction|$transferId".toByteArray(StandardCharsets.UTF_8))
     }
 }

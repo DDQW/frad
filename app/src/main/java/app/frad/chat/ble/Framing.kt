@@ -4,6 +4,20 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
+ * Upper bound on one framed message (handshake step, profile or chat envelope) - BLE and
+ * wide-range alike. The length prefix comes from a peer that hasn't authenticated yet, so it
+ * must be bounded before anything is allocated for it; 64 KiB is far above every legitimate
+ * message (the profile with its thumbnail photo is a few KiB, a chat text is capped by
+ * [app.frad.chat.chat.MAX_MESSAGE_CHARS]). File contents never travel as frames.
+ */
+const val MAX_FRAME_BYTES = 64 * 1024
+
+/** A peer announced a frame longer than [MAX_FRAME_BYTES] (or a negative length) - a protocol
+ *  violation the caller should answer by dropping the connection. */
+class FrameTooLargeException(length: Int, max: Int) :
+    IllegalArgumentException("Frame length $length outside 0..$max")
+
+/**
  * BLE GATT writes/notifications are capped by the negotiated ATT MTU (as low as
  * 20 bytes of payload if MTU negotiation is refused), but our Noise handshake
  * messages and chat ciphertexts can be larger than that. [FrameWriter] splits a
@@ -32,30 +46,57 @@ object FrameWriter {
 }
 
 /** Not thread-safe; use one instance per logical connection/direction. */
-class FrameReassembler {
-    private var expectedLength = -1
-    private var buffer = ByteArray(0)
+class FrameReassembler(private val maxMessageSize: Int = MAX_FRAME_BYTES) {
+    private val header = ByteArray(4)
+    private var headerFilled = 0
+    private var body: ByteArray? = null
+    private var bodyFilled = 0
+    private var leftover = ByteArray(0)
 
-    /** @return a completed message once enough fragments have arrived, or null if more are needed. */
+    /** @return a completed message once enough fragments have arrived, or null if more are needed.
+     *  @throws FrameTooLargeException if the peer announces a length outside 0..[maxMessageSize];
+     *    the reassembler is reset, but the connection should be dropped regardless. */
     fun offer(fragment: ByteArray): ByteArray? {
-        buffer += fragment
+        val input = if (leftover.isEmpty()) fragment else leftover + fragment
+        leftover = ByteArray(0)
+        var pos = 0
 
-        if (expectedLength < 0) {
-            if (buffer.size < 4) return null
-            expectedLength = ByteBuffer.wrap(buffer, 0, 4).order(ByteOrder.BIG_ENDIAN).int
+        if (body == null) {
+            val headerBytes = minOf(header.size - headerFilled, input.size)
+            input.copyInto(header, headerFilled, 0, headerBytes)
+            headerFilled += headerBytes
+            pos = headerBytes
+            if (headerFilled < header.size) return null
+
+            val length = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN).int
+            if (length !in 0..maxMessageSize) {
+                reset()
+                throw FrameTooLargeException(length, maxMessageSize)
+            }
+            // Safe to allocate up front now that the length is bounded, and it avoids re-copying
+            // the whole buffer on every small BLE fragment.
+            body = ByteArray(length)
+            bodyFilled = 0
         }
 
-        val totalNeeded = 4 + expectedLength
-        if (buffer.size < totalNeeded) return null
+        val message = body!!
+        val bodyBytes = minOf(message.size - bodyFilled, input.size - pos)
+        input.copyInto(message, bodyFilled, pos, pos + bodyBytes)
+        bodyFilled += bodyBytes
+        pos += bodyBytes
+        if (bodyFilled < message.size) return null
 
-        val message = buffer.copyOfRange(4, totalNeeded)
-        buffer = buffer.copyOfRange(totalNeeded, buffer.size) // leftover bytes belong to the next message
-        expectedLength = -1
+        leftover = input.copyOfRange(pos, input.size) // leftover bytes belong to the next message
+        body = null
+        headerFilled = 0
+        bodyFilled = 0
         return message
     }
 
     fun reset() {
-        expectedLength = -1
-        buffer = ByteArray(0)
+        headerFilled = 0
+        body = null
+        bodyFilled = 0
+        leftover = ByteArray(0)
     }
 }

@@ -188,16 +188,29 @@ class BlePeripheralServer(
             offset: Int,
             value: ByteArray,
         ) {
-            if (characteristic.uuid == GattProfile.INBOX_CHARACTERISTIC_UUID) {
-                Log.d(TAG, "onCharacteristicWriteRequest addr=${device.address} bytes=${value.size}")
-                val complete = reassemblers.getOrPut(device.address) { FrameReassembler() }.offer(value)
-                if (complete != null) {
-                    listener.onFrameReceived(device.address, complete)
+            var frameTooLarge = false
+            try {
+                if (characteristic.uuid == GattProfile.INBOX_CHARACTERISTIC_UUID) {
+                    Log.d(TAG, "onCharacteristicWriteRequest addr=${device.address} bytes=${value.size}")
+                    val complete = try {
+                        reassemblers.getOrPut(device.address) { FrameReassembler() }.offer(value)
+                    } catch (e: FrameTooLargeException) {
+                        Log.w(TAG, "dropping ${device.address}: ${e.message}")
+                        frameTooLarge = true
+                        null
+                    }
+                    if (complete != null) {
+                        listener.onFrameReceived(device.address, complete)
+                    }
+                }
+            } finally {
+                // Always answer the write, even if handling it failed - otherwise the central's
+                // GATT queue stalls on it instead of seeing a clean disconnect.
+                if (responseNeeded) {
+                    gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, null)
                 }
             }
-            if (responseNeeded) {
-                gattServer?.sendResponse(device, requestId, android.bluetooth.BluetoothGatt.GATT_SUCCESS, offset, null)
-            }
+            if (frameTooLarge) gattServer?.cancelConnection(device)
         }
 
         override fun onDescriptorWriteRequest(
