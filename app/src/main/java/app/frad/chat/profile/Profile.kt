@@ -68,6 +68,13 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
 
+    /** Shown to matches (see [Interest]); at most [Interest.MAX_PER_PROFILE]. */
+    var interests: Set<Interest>
+        get() = prefs.getString(KEY_INTERESTS, null)?.split(',')?.mapNotNull(Interest::fromKey)?.toSet() ?: emptySet()
+        set(value) {
+            prefs.edit().putString(KEY_INTERESTS, value.take(Interest.MAX_PER_PROFILE).joinToString(",") { it.key }).apply()
+        }
+
     /** When being visible (browsing) should end by itself, in epoch millis; 0 = until switched
      *  off. Checked by the controllers while browsing - see the Radar tab's "Stay visible". */
     var visibleUntilMillis: Long
@@ -144,6 +151,7 @@ class Profile(context: Context) {
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_HISTORY_RETENTION_DAYS = "history_retention_days"
         private const val KEY_VISIBLE_UNTIL = "visible_until"
+        private const val KEY_INTERESTS = "interests"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"

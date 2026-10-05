@@ -252,6 +252,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         else -> null
     }
 
+    var interests: Set<app.frad.chat.profile.Interest>
+        get() = profile.interests
+        set(value) { profile.interests = value }
+
     var wideRangeRelayOnly: Boolean
         get() = profile.wideRangeRelayOnly
         set(value) { profile.wideRangeRelayOnly = value }

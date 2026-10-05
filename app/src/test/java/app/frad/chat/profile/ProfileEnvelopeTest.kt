@@ -37,4 +37,21 @@ class ProfileEnvelopeTest {
         assertEquals("Guest", decode { }.pseudonym)
         assertEquals("Guest", decode { put("pseudonym", "​​") }.pseudonym)
     }
+
+    @Test
+    fun `only known interests are taken, at most five`() {
+        val profile = decode {
+            put("tags", org.json.JSONArray(listOf("music", "evil<script>", "books", "gaming", "sports", "fitness", "travel")))
+        }
+        assertEquals(setOf(Interest.MUSIC, Interest.BOOKS, Interest.GAMING, Interest.SPORTS, Interest.FITNESS), profile.interests)
+        assertEquals(emptySet<Interest>(), decode { put("tags", "music") }.interests)
+    }
+
+    @Test
+    fun `icebreakers start with what both people like`() {
+        val openers = Interest.icebreakers(setOf(Interest.PETS, Interest.MUSIC))
+        assertEquals(listOf(Interest.MUSIC.icebreaker, Interest.PETS.icebreaker), openers.take(2))
+        assertEquals(3, openers.size)
+        assertEquals(3, Interest.icebreakers(emptySet()).size)
+    }
 }

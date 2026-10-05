@@ -57,6 +57,7 @@ internal class OpenChat(
             remotePhoto = peer.profile.photo,
             messages = if (contactStore.isSaved(peer.peerId)) historyStore.messagesFor(peer.peerId) else emptyList(),
             safetyNumber = SafetyNumber.of(ourPublicKey, peer.staticKey),
+            remoteInterests = peer.profile.interests,
         )
     }
 

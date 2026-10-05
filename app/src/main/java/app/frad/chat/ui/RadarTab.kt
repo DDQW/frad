@@ -148,6 +148,8 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
                 transferProgress = transferProgress,
                 onCancelTransfer = { viewModel.cancelTransfer() },
                 incomingFile = current.incomingFile,
+                remoteInterests = current.remoteInterests,
+                myInterests = viewModel.interests,
                 onAnswerIncomingFile = { viewModel.answerIncomingFile(it) },
                 errorMessage = errorEvent,
                 onDismissError = { viewModel.consumeErrorEvent() },

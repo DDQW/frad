@@ -87,6 +87,7 @@ import app.frad.chat.chat.MessageKind
 import app.frad.chat.media.AudioRecorder
 import app.frad.chat.media.CaptureFiles
 import app.frad.chat.profile.Gender
+import app.frad.chat.profile.Interest
 import app.frad.chat.profile.Profile
 import app.frad.chat.safety.Nudges
 import app.frad.chat.chat.FileOffer
@@ -121,6 +122,8 @@ internal fun ChatContent(
     /** The peer asks to send this; [onAnswerIncomingFile] says yes or no. */
     incomingFile: FileOffer?,
     onAnswerIncomingFile: (accept: Boolean) -> Unit,
+    remoteInterests: Set<Interest>,
+    myInterests: Set<Interest>,
     errorMessage: String?,
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
@@ -270,6 +273,17 @@ internal fun ChatContent(
                     Spacer(Modifier.height(6.dp))
                     Text(remoteBio, style = MaterialTheme.typography.bodySmall)
                 }
+                if (remoteInterests.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    // Shared interests first and starred.
+                    Text(
+                        remoteInterests.sortedBy { it !in myInterests }.joinToString("  ·  ") {
+                            if (it in myInterests) "★ ${it.label}" else it.label
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(
@@ -291,8 +305,19 @@ internal fun ChatContent(
         }
         HorizontalDivider()
 
-        // Received pictures from someone who isn't a contact stay pixelated until tapped.
-        MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth(), veilTheirImages = !alreadySaved)
+        if (messages.isEmpty()) {
+            // An empty chat: a few openers, from what both picked (see Interest.icebreakers).
+            val openers = remember(remoteInterests, myInterests) { Interest.icebreakers(remoteInterests intersect myInterests) }
+            Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.Bottom) {
+                Text("Not sure how to start?", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                openers.forEach { opener ->
+                    AssistChip(onClick = { draft = opener }, label = { Text(opener) })
+                }
+            }
+        } else {
+            // Received pictures from someone who isn't a contact stay pixelated until tapped.
+            MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth(), veilTheirImages = !alreadySaved)
+        }
 
         if (confirmBlock) {
             AlertDialog(

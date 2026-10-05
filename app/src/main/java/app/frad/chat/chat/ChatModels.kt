@@ -56,6 +56,8 @@ sealed interface ChatUiState {
         val safetyNumber: String = "",
         /** The peer asks to send this file; nothing is transferred unless the user accepts. */
         val incomingFile: FileOffer? = null,
+        /** What the peer picked on their profile (see [app.frad.chat.profile.Interest]). */
+        val remoteInterests: Set<app.frad.chat.profile.Interest> = emptySet(),
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

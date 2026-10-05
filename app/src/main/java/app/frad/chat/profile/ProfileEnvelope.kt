@@ -14,6 +14,7 @@ data class RemoteProfile(
     val age: Int?,
     val bio: String,
     val photo: ByteArray?,
+    val interests: Set<Interest> = emptySet(),
 )
 
 /**
@@ -29,12 +30,14 @@ object ProfileEnvelope {
     private const val KEY_AGE = "age"
     private const val KEY_BIO = "bio"
     private const val KEY_PHOTO = "photo"
+    private const val KEY_INTERESTS = "tags"
 
     fun encode(context: Context, profile: Profile): String {
         val json = JSONObject()
             .put(KEY_PSEUDONYM, profile.pseudonym)
             .put(KEY_BIO, profile.bio)
         profile.gender?.let { json.put(KEY_GENDER, it.name) }
+        if (profile.interests.isNotEmpty()) json.put(KEY_INTERESTS, org.json.JSONArray(profile.interests.map { it.key }))
         if (profile.shareAge) profile.age?.let { json.put(KEY_AGE, it) }
         // java.util.Base64 (API 26+, same unwrapped standard alphabet android.util.Base64.NO_WRAP
         // produced before) rather than android.util.Base64, so this also runs in JVM unit tests.
@@ -62,6 +65,16 @@ object ProfileEnvelope {
             age = age,
             bio = TextSanitizer.clean(obj.optString(KEY_BIO, ""), Profile.MAX_BIO_LENGTH, allowNewlines = true),
             photo = photo,
+            interests = decodeInterests(obj),
         )
+    }
+
+    /** Only known keys, at most [Interest.MAX_PER_PROFILE] of them - anything else is ignored. */
+    private fun decodeInterests(obj: JSONObject): Set<Interest> {
+        val array = obj.optJSONArray(KEY_INTERESTS) ?: return emptySet()
+        return (0 until minOf(array.length(), 32))
+            .mapNotNull { Interest.fromKey(array.optString(it, "")) }
+            .take(Interest.MAX_PER_PROFILE)
+            .toSet()
     }
 }

@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 import app.frad.chat.AppLock
 import app.frad.chat.qr.QrCode
 import app.frad.chat.profile.Gender
+import app.frad.chat.profile.Interest
 import app.frad.chat.profile.Profile
 import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.wideradius.AreaLookup
@@ -75,6 +76,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var ageDraft by remember { mutableStateOf(viewModel.age?.toString() ?: "") }
     var shareAgeDraft by remember { mutableStateOf(viewModel.shareAge) }
     var bioDraft by remember { mutableStateOf(viewModel.bio) }
+    var interestsDraft by remember { mutableStateOf(viewModel.interests) }
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var alwaysVisible by remember { mutableStateOf(viewModel.alwaysVisible) }
     var radiusKm by remember { mutableStateOf(viewModel.searchRadiusKm) }
@@ -195,6 +197,24 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Interests (up to ${Interest.MAX_PER_PROFILE}) - matches see them, shared ones suggest a first question",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Interest.entries.forEach { interest ->
+                    val selected = interest in interestsDraft
+                    FilterChip(
+                        selected = selected,
+                        enabled = selected || interestsDraft.size < Interest.MAX_PER_PROFILE,
+                        onClick = { interestsDraft = if (selected) interestsDraft - interest else interestsDraft + interest },
+                        label = { Text(interest.label) },
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Button(
                 enabled = ageValid && genderDraft != null,
@@ -204,6 +224,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                     viewModel.age = ageDraft.toIntOrNull()
                     viewModel.shareAge = shareAgeDraft
                     viewModel.bio = bioDraft
+                    viewModel.interests = interestsDraft
                 },
             ) { Text("Save") }
             Spacer(Modifier.height(12.dp))
