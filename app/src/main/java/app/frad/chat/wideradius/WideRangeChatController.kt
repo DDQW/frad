@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import app.frad.chat.R
 import app.frad.chat.ble.FrameTooLargeException
 import app.frad.chat.ble.FrameWriter
 import app.frad.chat.ble.MAX_FRAME_BYTES
@@ -169,7 +170,7 @@ class WideRangeChatController(
             delay(HANDSHAKE_TIMEOUT_MILLIS)
             if (stillPending()) {
                 Log.w(TAG, "chat setup timed out, state=${_state.value}")
-                endActive("connection timed out")
+                endActive(context.getString(R.string.ctl_ended_connection_timed_out))
             }
         }
     }
@@ -215,11 +216,11 @@ class WideRangeChatController(
         scope.launch {
             if (enabled == browsing) return@launch
             if (enabled && !WideRangeNode.isSupported) {
-                _state.value = ChatUiState.Ended("Wide-range networking isn't built into this app")
+                _state.value = ChatUiState.Ended(context.getString(R.string.ctl_wide_not_built))
                 return@launch
             }
             if (enabled && profile.coarseGeohash == null) {
-                _state.value = ChatUiState.Ended("Set your area in Profile before going wide-range")
+                _state.value = ChatUiState.Ended(context.getString(R.string.ctl_wide_set_area_first))
                 return@launch
             }
             if (enabled) {
@@ -232,8 +233,10 @@ class WideRangeChatController(
                 }
                 if (nodeDirectory.candidates().isEmpty()) {
                     _state.value = ChatUiState.Ended(
-                        if (profile.usePublicNodes) "No FRAD servers known yet - add one in Profile, or open a frad://node link someone shared."
-                        else "Add at least one server in Profile, or allow public servers.",
+                        context.getString(
+                            if (profile.usePublicNodes) R.string.ctl_wide_no_servers_known
+                            else R.string.ctl_wide_add_server_or_allow_public,
+                        ),
                     )
                     return@launch
                 }
@@ -263,7 +266,7 @@ class WideRangeChatController(
                     )
                     if (started.isFailure) {
                         browsing = false
-                        _state.value = ChatUiState.Ended("Couldn't start wide-range networking: ${started.exceptionOrNull()?.message}")
+                        _state.value = ChatUiState.Ended(context.getString(R.string.ctl_wide_start_failed, started.exceptionOrNull()?.message.toString()))
                         return@launch
                     }
                     nodeRunning = true
@@ -278,7 +281,7 @@ class WideRangeChatController(
                 }
             } else {
                 stopDiscoveryCollectors()
-                endActive("stopped browsing")
+                endActive(context.getString(R.string.ctl_ended_stopped_browsing))
                 _state.value = ChatUiState.Idle
                 nodeLifecycle.withLock {
                     if (!browsing && nodeRunning) {
@@ -318,7 +321,7 @@ class WideRangeChatController(
                 if (until > 0 && System.currentTimeMillis() >= until && activeLink == null) {
                     profile.visibleUntilMillis = 0
                     setBrowsing(false)
-                    _notices.tryEmit("Your visibility time is up - you're not visible any more.")
+                    _notices.tryEmit(context.getString(R.string.ctl_notice_visibility_expired))
                     break
                 }
             }
@@ -349,11 +352,12 @@ class WideRangeChatController(
      *  user why nothing happens. */
     private fun pickPeer(candidates: List<NearbyPeer>): NearbyPeer? {
         if (candidates.isEmpty()) {
-            _notices.tryEmit("Nobody's around yet - keep FRAD open for a moment.")
+            _notices.tryEmit(context.getString(R.string.ctl_notice_nobody_around))
             return null
         }
         return matcher.pickRandomPeer(candidates, excluding = cooldown.coolingDown()) ?: run {
-            _notices.tryEmit("You've asked everyone around in the last ${Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000} seconds - try again in a moment.")
+            val seconds = (Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000).toInt()
+            _notices.tryEmit(context.resources.getQuantityString(R.plurals.ctl_notice_asked_everyone, seconds, seconds))
             null
         }
     }
@@ -372,7 +376,7 @@ class WideRangeChatController(
             }
             if (_state.value !== connecting) return@launch
             val stream = node.openStream(picked.sessionId, CHAT_PROTOCOL_ID).getOrElse {
-                if (_state.value === connecting) endActive("couldn't reach that peer")
+                if (_state.value === connecting) endActive(context.getString(R.string.ctl_ended_peer_unreachable))
                 return@launch
             }
             // Gave up waiting meanwhile (timeout), or an incoming chat got there first.
@@ -393,7 +397,7 @@ class WideRangeChatController(
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "couldn't send handshake", e)
-                if (activeLink === link) endActive("peer disconnected")
+                if (activeLink === link) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
             }
         }
     }
@@ -408,7 +412,7 @@ class WideRangeChatController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                endLink(link, "peer disconnected")
+                endLink(link, context.getString(R.string.ctl_ended_peer_disconnected))
             }
         }
     }
@@ -438,7 +442,7 @@ class WideRangeChatController(
                 val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
                 if (!askToSend(link, offer)) return@launch
                 val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
-                _transferStatus.value = "Sending $fileName…"
+                _transferStatus.value = context.getString(R.string.ctl_transfer_sending, fileName)
                 val sent = try {
                     val transferStream = node.openStream(link.stream.remotePeerId, TRANSFER_PROTOCOL_ID).getOrThrow()
                     try {
@@ -462,7 +466,7 @@ class WideRangeChatController(
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
                     openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
                 } else if (activeLink === link) {
-                    _notices.tryEmit("$fileName couldn't be sent.")
+                    _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_sent, fileName))
                 }
             } finally {
                 transferEnded(job)
@@ -489,14 +493,14 @@ class WideRangeChatController(
             val job = transferJob ?: return@launch
             transferEnded(job)
             job.cancel()
-            _notices.tryEmit("Transfer cancelled.")
+            _notices.tryEmit(context.getString(R.string.ctl_notice_transfer_cancelled))
         }
     }
 
     /** Asks the peer (see [OpenChat.requestToSend]); true once they've accepted and the chat is
      *  still the same one. Leaves [_transferStatus] set while waiting, cleared otherwise. */
     private suspend fun askToSend(link: Link, offer: FileOffer): Boolean {
-        _transferStatus.value = "Waiting for them to accept ${offer.fileName}…"
+        _transferStatus.value = context.getString(R.string.ctl_transfer_waiting_for_accept, offer.fileName)
         val answer = try {
             openChat.requestToSend(link.chat, offer)
         } catch (e: CancellationException) {
@@ -510,8 +514,8 @@ class WideRangeChatController(
         if (activeLink !== link) return false
         when (answer) {
             OpenChat.FileAnswer.ACCEPTED -> return true
-            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit("${offer.fileName} wasn't sent - they declined it.")
-            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit("${offer.fileName} wasn't sent - no answer.")
+            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_declined, offer.fileName))
+            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_no_answer, offer.fileName))
         }
         return false
     }
@@ -544,7 +548,7 @@ class WideRangeChatController(
             return
         }
         val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
-        _transferStatus.value = "Receiving ${offer.fileName}…"
+        _transferStatus.value = context.getString(R.string.ctl_transfer_receiving, offer.fileName)
         transferJob = scope.launch {
             val job = coroutineContext[Job]
             try {
@@ -566,7 +570,7 @@ class WideRangeChatController(
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
                     openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
                 } else if (activeLink === link) {
-                    _notices.tryEmit("${offer.fileName} couldn't be received.")
+                    _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_received, offer.fileName))
                 }
             } finally {
                 transferEnded(job)
@@ -628,7 +632,7 @@ class WideRangeChatController(
         scope.launch {
             val current = _state.value
             if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym)
-            endActive("blocked")
+            endActive(context.getString(R.string.ctl_ended_blocked))
         }
     }
 
@@ -636,7 +640,7 @@ class WideRangeChatController(
         scope.launch {
             val current = _state.value
             if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason, current.messages)
-            endActive("reported")
+            endActive(context.getString(R.string.ctl_ended_reported))
         }
     }
 
@@ -711,7 +715,7 @@ class WideRangeChatController(
             while (isActive) {
                 val frame = readFrame(link.stream).getOrElse {
                     if (it is FrameTooLargeException) Log.w(TAG, "dropping peer: ${it.message}")
-                    if (activeLink === link) endActive("peer disconnected")
+                    if (activeLink === link) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
                     return@launch
                 }
                 // Timed out or otherwise ended while this frame was in flight - don't let it
@@ -729,7 +733,7 @@ class WideRangeChatController(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "dropping connection after bad frame", e)
-                    endLink(link, "connection error")
+                    endLink(link, context.getString(R.string.ctl_ended_connection_error))
                     return@launch
                 }
                 // onFrame may have suspended (sending a reply) - the chat may be gone by now.
@@ -740,11 +744,11 @@ class WideRangeChatController(
                 when (event) {
                     null -> Unit
                     ChatEvent.Blocked -> {
-                        endLink(link, "blocked peer")
+                        endLink(link, context.getString(R.string.ctl_ended_blocked_peer))
                         return@launch
                     }
                     ChatEvent.AgeGroupMismatch -> {
-                        endLink(link, "Not a match: FRAD only connects adults with adults and minors with minors.")
+                        endLink(link, context.getString(R.string.ctl_ended_age_mismatch))
                         return@launch
                     }
                     is ChatEvent.Ready -> {

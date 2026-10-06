@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import app.frad.chat.R
 import app.frad.chat.chat.ChatConnection
 import app.frad.chat.chat.ChatController
 import app.frad.chat.chat.ChatEnvelope
@@ -167,8 +168,10 @@ class BleChatController(
         setBrowsing(false)
     }
 
+    private fun bluetoothOffReason(): String = context.getString(R.string.ctl_paused_bluetooth_off)
+
     private fun browsingState(): ChatUiState =
-        if (!bluetoothOn()) ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+        if (!bluetoothOn()) ChatUiState.Paused(bluetoothOffReason())
         else ChatUiState.Browsing(discoveredBySessionId.values.toList(), advertisingWarning)
 
     private fun onBluetoothStateChanged(newState: Int) {
@@ -177,10 +180,10 @@ class BleChatController(
             BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                 if (_state.value is ChatUiState.Paused) return
                 Log.d(TAG, "Bluetooth going off - pausing")
-                endActive("Bluetooth was turned off")
+                endActive(context.getString(R.string.ctl_ended_bluetooth_turned_off))
                 central.stopScanning()
                 peripheral.stop()
-                _state.value = ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+                _state.value = ChatUiState.Paused(bluetoothOffReason())
             }
             BluetoothAdapter.STATE_ON -> {
                 if (_state.value !is ChatUiState.Paused) return
@@ -281,7 +284,7 @@ class BleChatController(
             delay(CONNECTION_TIMEOUT_MILLIS)
             if (activeAddress == address) {
                 Log.w(TAG, "connection timed out, addr=$address state=${_state.value}")
-                endActive("connection timed out")
+                endActive(context.getString(R.string.ctl_ended_connection_timed_out))
             }
         }
     }
@@ -297,7 +300,7 @@ class BleChatController(
             if (enabled == browsing) return@launch
             browsing = enabled
             if (enabled) {
-                if (bluetoothOn()) startRadios() else _state.value = ChatUiState.Paused(BLUETOOTH_OFF_REASON)
+                if (bluetoothOn()) startRadios() else _state.value = ChatUiState.Paused(bluetoothOffReason())
                 browsingJob = scope.launch {
                     launch {
                         while (true) {
@@ -318,7 +321,7 @@ class BleChatController(
                             if (visibilityExpired() && activeAddress == null) {
                                 profile.visibleUntilMillis = 0
                                 setBrowsing(false)
-                                _notices.tryEmit("Your visibility time is up - you're not visible any more.")
+                                _notices.tryEmit(context.getString(R.string.ctl_notice_visibility_expired))
                                 onVisibilityExpired?.invoke()
                                 break
                             }
@@ -330,7 +333,7 @@ class BleChatController(
                 browsingJob = null
                 central.stopScanning()
                 peripheral.stop()
-                endActive("stopped browsing")
+                endActive(context.getString(R.string.ctl_ended_stopped_browsing))
                 _state.value = ChatUiState.Idle
             }
         }
@@ -355,11 +358,12 @@ class BleChatController(
      *  user why nothing happens. */
     private fun pickPeer(candidates: List<NearbyPeer>): NearbyPeer? {
         if (candidates.isEmpty()) {
-            _notices.tryEmit("Nobody's around yet - keep FRAD open for a moment.")
+            _notices.tryEmit(context.getString(R.string.ctl_notice_nobody_around))
             return null
         }
         return matcher.pickRandomPeer(candidates, excluding = cooldown.coolingDown()) ?: run {
-            _notices.tryEmit("You've asked everyone around in the last ${Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000} seconds - try again in a moment.")
+            val seconds = (Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000).toInt()
+            _notices.tryEmit(context.resources.getQuantityString(R.plurals.ctl_notice_asked_everyone, seconds, seconds))
             null
         }
     }
@@ -429,7 +433,7 @@ class BleChatController(
                 val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
                 if (!askToSend(link, offer)) return@launch
                 val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
-                _transferStatus.value = "Sending $fileName…"
+                _transferStatus.value = context.getString(R.string.ctl_transfer_sending, fileName)
                 val result = manager.hostAndSendFile(bytes, transferKey, onProgress = progressOf(offer.sizeBytes)) { credentials ->
                     link.chat.send(ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase))
                 }
@@ -437,7 +441,7 @@ class BleChatController(
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
                     openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
                 }.onFailure {
-                    if (activeLink() === link) _notices.tryEmit("$fileName couldn't be sent.")
+                    if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_sent, fileName))
                 }
             } finally {
                 transferEnded(job)
@@ -464,14 +468,14 @@ class BleChatController(
             val job = transferJob ?: return@launch
             transferEnded(job)
             job.cancel()
-            _notices.tryEmit("Transfer cancelled.")
+            _notices.tryEmit(context.getString(R.string.ctl_notice_transfer_cancelled))
         }
     }
 
     /** Asks the peer (see [OpenChat.requestToSend]); true once they've accepted and the chat is
      *  still the same one. Leaves [_transferStatus] set while waiting, cleared otherwise. */
     private suspend fun askToSend(link: Link, offer: FileOffer): Boolean {
-        _transferStatus.value = "Waiting for them to accept ${offer.fileName}…"
+        _transferStatus.value = context.getString(R.string.ctl_transfer_waiting_for_accept, offer.fileName)
         val answer = try {
             openChat.requestToSend(link.chat, offer)
         } catch (e: CancellationException) {
@@ -485,8 +489,8 @@ class BleChatController(
         if (activeLink() !== link) return false
         when (answer) {
             OpenChat.FileAnswer.ACCEPTED -> return true
-            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit("${offer.fileName} wasn't sent - they declined it.")
-            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit("${offer.fileName} wasn't sent - no answer.")
+            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_declined, offer.fileName))
+            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_no_answer, offer.fileName))
         }
         return false
     }
@@ -524,7 +528,7 @@ class BleChatController(
 
         val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
         val credentials = WfdCredentials(networkName = envelope.networkName, passphrase = envelope.passphrase)
-        _transferStatus.value = "Receiving ${offer.fileName}…"
+        _transferStatus.value = context.getString(R.string.ctl_transfer_receiving, offer.fileName)
         transferJob = scope.launch {
             val job = coroutineContext[Job]
             try {
@@ -533,7 +537,7 @@ class BleChatController(
                     val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
                     openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
                 }.onFailure {
-                    if (activeLink() === link) _notices.tryEmit("${offer.fileName} couldn't be received.")
+                    if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_received, offer.fileName))
                 }
             } finally {
                 transferEnded(job)
@@ -589,7 +593,7 @@ class BleChatController(
         scope.launch {
             val current = _state.value
             if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym)
-            endActive("blocked")
+            endActive(context.getString(R.string.ctl_ended_blocked))
         }
     }
 
@@ -597,7 +601,7 @@ class BleChatController(
         scope.launch {
             val current = _state.value
             if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason, current.messages)
-            endActive("reported")
+            endActive(context.getString(R.string.ctl_ended_reported))
         }
     }
 
@@ -630,7 +634,7 @@ class BleChatController(
     override fun onCentralDisconnected(deviceAddress: String) {
         scope.launch {
             Log.d(TAG, "onCentralDisconnected addr=$deviceAddress")
-            if (deviceAddress == activeAddress) endActive("peer disconnected")
+            if (deviceAddress == activeAddress) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
             links.remove(deviceAddress)
         }
     }
@@ -651,10 +655,10 @@ class BleChatController(
             if (!bluetoothOn()) return@launch // reported as Paused instead
             advertisingWarning = when (errorCode) {
                 AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED ->
-                    "This phone can't announce itself over Bluetooth, so others can't find you - you can still find them."
+                    context.getString(R.string.ctl_advertising_unsupported)
                 AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS ->
-                    "Too many apps are using Bluetooth announcements right now, so others can't find you."
-                else -> "Others can't find you right now (Bluetooth announcement failed, code $errorCode)."
+                    context.getString(R.string.ctl_advertising_too_many_advertisers)
+                else -> context.getString(R.string.ctl_advertising_failed, errorCode)
             }
             if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
         }
@@ -700,7 +704,7 @@ class BleChatController(
     override fun onDisconnected(deviceAddress: String) {
         scope.launch {
             Log.d(TAG, "onDisconnected (outbound) addr=$deviceAddress")
-            if (deviceAddress == activeAddress) endActive("peer disconnected")
+            if (deviceAddress == activeAddress) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
             links.remove(deviceAddress)
         }
     }
@@ -730,16 +734,16 @@ class BleChatController(
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "dropping link after bad frame from $deviceAddress", e)
-            abortLink(deviceAddress, "connection error")
+            abortLink(deviceAddress, context.getString(R.string.ctl_ended_connection_error))
             return
         }
         when (event) {
             null -> Unit
-            ChatEvent.Blocked -> abortLink(deviceAddress, "blocked peer")
-            ChatEvent.AgeGroupMismatch -> abortLink(deviceAddress, AGE_MISMATCH_REASON)
+            ChatEvent.Blocked -> abortLink(deviceAddress, context.getString(R.string.ctl_ended_blocked_peer))
+            ChatEvent.AgeGroupMismatch -> abortLink(deviceAddress, context.getString(R.string.ctl_ended_age_mismatch))
             is ChatEvent.Ready -> {
                 if (deviceAddress != activeAddress) {
-                    abortLink(deviceAddress, "superseded")
+                    abortLink(deviceAddress, context.getString(R.string.ctl_ended_superseded))
                     return
                 }
                 disarmConnectionTimeout()
@@ -762,8 +766,6 @@ class BleChatController(
         private const val VISIBILITY_CHECK_MILLIS = 30_000L
         const val PEER_TTL_MILLIS = 30_000L
         const val SESSION_ROTATION_MILLIS = 10 * 60_000L
-        const val AGE_MISMATCH_REASON = "Not a match: FRAD only connects adults with adults and minors with minors."
-        const val BLUETOOTH_OFF_REASON = "Bluetooth is off - FRAD continues automatically once it's back on."
         const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }
 }

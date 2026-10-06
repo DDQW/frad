@@ -109,8 +109,8 @@ class LocalBleService : Service() {
 
     private fun buildNotification(state: ChatUiState): Notification {
         val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(CHANNEL_ID, "FRAD visibility", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "Shown whenever FRAD is discoverable to people nearby, including in the background."
+        val channel = NotificationChannel(CHANNEL_ID, getString(R.string.ctl_notification_channel_name), NotificationManager.IMPORTANCE_LOW).apply {
+            description = getString(R.string.ctl_notification_channel_description)
         }
         manager.createNotificationChannel(channel)
 
@@ -127,17 +127,17 @@ class LocalBleService : Service() {
             FLAG_IMMEDIATE_OR_UPDATE,
         )
         val (title, text) = when (state) {
-            is ChatUiState.Paused -> "FRAD is paused" to "Bluetooth is off - continues once it's back on"
-            is ChatUiState.Connecting, ChatUiState.Handshaking -> "FRAD is connecting" to "Someone nearby is starting a chat - tap to open"
-            is ChatUiState.Chatting -> "FRAD: chatting" to "You're in a chat - tap to open FRAD"
-            else -> "FRAD is looking for friends" to "Visible to people nearby - tap to open FRAD"
+            is ChatUiState.Paused -> R.string.ctl_notification_paused_title to R.string.ctl_notification_paused_text
+            is ChatUiState.Connecting, ChatUiState.Handshaking -> R.string.ctl_notification_connecting_title to R.string.ctl_notification_connecting_text
+            is ChatUiState.Chatting -> R.string.ctl_notification_chatting_title to R.string.ctl_notification_chatting_text
+            else -> R.string.ctl_notification_browsing_title to R.string.ctl_notification_browsing_text
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setContentTitle(getString(title))
+            .setContentText(getString(text))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openApp)
-            .addAction(0, "Turn off", turnOff)
+            .addAction(0, getString(R.string.ctl_notification_turn_off), turnOff)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
