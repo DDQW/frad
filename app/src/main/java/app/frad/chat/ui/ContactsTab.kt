@@ -30,8 +30,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.frad.chat.R
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.contacts.Contact
 import app.frad.chat.profile.Profile
@@ -53,13 +55,13 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            "Saved contacts",
+            stringResource(R.string.radar_saved_contacts),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(16.dp),
         )
         if (contacts.isEmpty()) {
-            EmptyState(Icons.Default.Group, "No saved contacts yet. Save someone from an active chat.")
+            EmptyState(Icons.Default.Group, stringResource(R.string.radar_no_contacts))
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 items(contacts) { contact ->
@@ -78,7 +80,7 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
                                 viewModel.removeContact(contact.peerId)
                                 contacts = viewModel.contacts()
                             }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Remove contact")
+                                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.radar_remove_contact))
                             }
                         }
                     }
@@ -92,14 +94,14 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
 private fun ContactHistoryContent(contact: Contact, messages: List<ChatMessage>, onBack: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.radar_back)) }
             Avatar(label = contact.alias, size = 32.dp)
             Spacer(Modifier.width(8.dp))
             Text(Profile.displayName(contact.alias, contact.peerId), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
         HorizontalDivider()
         if (messages.isEmpty()) {
-            EmptyState(Icons.Default.Group, "No saved messages with this contact yet - only messages exchanged after you saved them are kept.")
+            EmptyState(Icons.Default.Group, stringResource(R.string.radar_no_history))
         } else {
             MessageList(messages, modifier = Modifier.weight(1f).fillMaxWidth())
         }
