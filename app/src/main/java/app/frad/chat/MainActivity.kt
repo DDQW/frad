@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import app.frad.chat.profile.Profile
 import app.frad.chat.ui.ChatViewModel
@@ -199,7 +200,7 @@ private fun LockedScreen(onUnlock: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("FRAD is locked", style = MaterialTheme.typography.titleLarge)
-        Button(onClick = onUnlock) { Text("Unlock") }
+        Text(stringResource(R.string.misc_locked_title), style = MaterialTheme.typography.titleLarge)
+        Button(onClick = onUnlock) { Text(stringResource(R.string.misc_unlock)) }
     }
 }

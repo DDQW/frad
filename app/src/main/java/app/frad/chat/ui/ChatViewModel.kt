@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import app.frad.chat.R
 import app.frad.chat.ble.LocalBleService
 import app.frad.chat.chat.ChatController
 import app.frad.chat.chat.ChatMessage
@@ -254,12 +255,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun wideRangeSetupMissing(): String? {
         // With public servers allowed, the official list is fetched when wide-range starts.
         val noServers = !profile.usePublicNodes && profile.bootstrapNodes.isEmpty()
-        return when {
-            profile.coarseGeohash == null && noServers -> "Set your area and at least one server (Profile → Wide-range) first."
-            profile.coarseGeohash == null -> "Set your area (Profile → Wide-range) first."
-            noServers -> "Add at least one server (Profile → Wide-range), or allow public servers."
-            else -> null
+        val missing = when {
+            profile.coarseGeohash == null && noServers -> R.string.misc_wide_setup_area_and_server
+            profile.coarseGeohash == null -> R.string.misc_wide_setup_area
+            noServers -> R.string.misc_wide_setup_server
+            else -> return null
         }
+        return getApplication<Application>().getString(missing)
     }
 
     var usePublicNodes: Boolean
@@ -370,7 +372,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun requestRandomChat() { activeController?.requestRandomChat() }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
     fun notifyTyping() { activeController?.notifyTyping() }
-    fun endChat() { activeController?.endActiveConnection("you left") }
+    fun endChat() { activeController?.endActiveConnection(getApplication<Application>().getString(R.string.misc_end_reason_you_left)) }
     fun acknowledgeEnded() { activeController?.acknowledgeEnded() }
     /** Whether FRAD is on screen - see [ChatController.setUiVisible]. */
     private var uiVisible = false
@@ -405,7 +407,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val mimeType = resolver.getType(uri) ?: "application/octet-stream"
         val fileName = displayNameOf(resolver, uri) ?: "file"
         val isMedia = mimeType.startsWith("image/") || mimeType.startsWith("video/")
-        val tooLarge = "That file is too large to send (max ${MAX_TRANSFER_FILE_BYTES / (1024 * 1024)} MB)."
+        val tooLarge = app.getString(R.string.misc_file_too_large, MAX_TRANSFER_FILE_BYTES / (1024 * 1024))
         // Media may shrink a lot once cleaned; anything else is sent as is, so check before reading it.
         if (!isMedia && (sizeOf(resolver, uri) ?: 0L) > MAX_TRANSFER_FILE_BYTES) {
             afterRead()
@@ -418,11 +420,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             afterRead()
             val file = prepared.getOrElse {
-                _errorEvent.value = if (isMedia) {
-                    "Couldn't remove the location and other hidden data from that file, so it wasn't sent."
-                } else {
-                    "Couldn't read that file."
-                }
+                _errorEvent.value = app.getString(if (isMedia) R.string.misc_file_sanitize_failed else R.string.misc_file_read_failed)
                 return@launch
             }
             if (file.bytes.size > MAX_TRANSFER_FILE_BYTES) {
