@@ -36,10 +36,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
+import app.frad.chat.R
 import app.frad.chat.profile.Profile
 import app.frad.chat.safety.BlockEntry
 
@@ -51,13 +53,13 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            "Blocked",
+            stringResource(R.string.misc_blocked_title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(16.dp),
         )
         if (blocked.isEmpty()) {
-            EmptyState(Icons.Default.Block, "You haven't blocked anyone.")
+            EmptyState(Icons.Default.Block, stringResource(R.string.misc_blocked_empty))
         } else {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 items(blocked, key = { it.key }) { entry ->
@@ -75,14 +77,14 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                             val transcript = remember(entry.key) { viewModel.reportTranscript(entry) }
                             if (transcript != null) {
                                 IconButton(onClick = { openReport = entry to transcript }) {
-                                    Icon(Icons.Default.Description, contentDescription = "Show report")
+                                    Icon(Icons.Default.Description, contentDescription = stringResource(R.string.misc_blocked_show_report))
                                 }
                             }
                             IconButton(onClick = {
                                 viewModel.unblock(entry)
                                 blocked = viewModel.blockedEntries()
                             }) {
-                                Icon(Icons.Default.LockOpen, contentDescription = "Unblock")
+                                Icon(Icons.Default.LockOpen, contentDescription = stringResource(R.string.misc_blocked_unblock))
                             }
                         }
                     }
@@ -94,7 +96,10 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
     openReport?.let { (entry, transcript) ->
         AlertDialog(
             onDismissRequest = { openReport = null },
-            title = { Text("Report: ${Profile.displayName(entry.pseudonym ?: "Unknown", entry.key)}") },
+            title = {
+                val name = Profile.displayName(entry.pseudonym ?: stringResource(R.string.misc_blocked_unknown_pseudonym), entry.key)
+                Text(stringResource(R.string.misc_blocked_report_title, name))
+            },
             text = {
                 SelectionContainer {
                     Text(
@@ -105,26 +110,31 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                 }
             },
             confirmButton = {
+                val subject = stringResource(R.string.misc_blocked_report_subject)
+                val chooserTitle = stringResource(R.string.misc_blocked_export_report_chooser)
                 TextButton(onClick = {
                     // Only ever leaves the phone this way - the user picks where it goes.
                     val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                        .putExtra(Intent.EXTRA_SUBJECT, "FRAD chat report")
+                        .putExtra(Intent.EXTRA_SUBJECT, subject)
                         .putExtra(Intent.EXTRA_TEXT, transcript)
-                    context.startActivity(Intent.createChooser(send, "Export report"))
-                }) { Text("Export") }
+                    context.startActivity(Intent.createChooser(send, chooserTitle))
+                }) { Text(stringResource(R.string.misc_blocked_export)) }
             },
-            dismissButton = { TextButton(onClick = { openReport = null }) { Text("Close") } },
+            dismissButton = { TextButton(onClick = { openReport = null }) { Text(stringResource(R.string.misc_blocked_close)) } },
         )
     }
 }
 
 @Composable
 private fun ColumnScope.BlockEntryText(entry: BlockEntry) {
-    Text(Profile.displayName(entry.pseudonym ?: "Unknown", entry.key), fontWeight = FontWeight.SemiBold)
-    val details = listOfNotNull(
-        if (entry.blockedAtMillis > 0) "Blocked " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(entry.blockedAtMillis)) else null,
-        entry.reason?.let { "reported: $it" },
-    )
+    Text(Profile.displayName(entry.pseudonym ?: stringResource(R.string.misc_blocked_unknown_pseudonym), entry.key), fontWeight = FontWeight.SemiBold)
+    val blockedOn = if (entry.blockedAtMillis > 0) {
+        stringResource(R.string.misc_blocked_on_date, DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(entry.blockedAtMillis)))
+    } else {
+        null
+    }
+    val reported = entry.reason?.let { stringResource(R.string.misc_blocked_reported_reason, it) }
+    val details = listOfNotNull(blockedOn, reported)
     if (details.isNotEmpty()) {
         Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

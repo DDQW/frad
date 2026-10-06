@@ -24,9 +24,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import app.frad.chat.R
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
 
@@ -50,11 +52,10 @@ internal fun OnboardingScreen(viewModel: ChatViewModel) {
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Welcome to FRAD", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.misc_onboarding_welcome), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Before you can meet anyone, tell people a little about yourself. There's no account - " +
-                "all of this stays on your phone until you're matched with someone.",
+            stringResource(R.string.misc_onboarding_intro),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -63,29 +64,29 @@ internal fun OnboardingScreen(viewModel: ChatViewModel) {
         OutlinedTextField(
             value = pseudonym,
             onValueChange = { pseudonym = it.take(Profile.MAX_LENGTH) },
-            label = { Text("Pseudonym") },
+            label = { Text(stringResource(R.string.misc_onboarding_pseudonym)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(16.dp))
 
-        Text("Gender", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.misc_onboarding_gender), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = gender == Gender.MALE, onClick = { gender = Gender.MALE }, label = { Text("Male") })
-            FilterChip(selected = gender == Gender.FEMALE, onClick = { gender = Gender.FEMALE }, label = { Text("Female") })
+            FilterChip(selected = gender == Gender.MALE, onClick = { gender = Gender.MALE }, label = { Text(stringResource(R.string.misc_onboarding_male)) })
+            FilterChip(selected = gender == Gender.FEMALE, onClick = { gender = Gender.FEMALE }, label = { Text(stringResource(R.string.misc_onboarding_female)) })
         }
         Spacer(Modifier.height(16.dp))
 
         OutlinedTextField(
             value = age,
             onValueChange = { age = it.filter(Char::isDigit).take(3) },
-            label = { Text("Age") },
+            label = { Text(stringResource(R.string.misc_onboarding_age)) },
             isError = tooYoung,
             supportingText = {
                 Text(
-                    if (tooYoung) "Sorry - FRAD is for people aged ${Profile.MIN_AGE} and over."
-                    else "Adults are only matched with adults, and under-18s only with under-18s.",
+                    if (tooYoung) stringResource(R.string.misc_onboarding_too_young, Profile.MIN_AGE)
+                    else stringResource(R.string.misc_onboarding_age_rule),
                 )
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -93,7 +94,7 @@ internal fun OnboardingScreen(viewModel: ChatViewModel) {
             modifier = Modifier.fillMaxWidth(),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Show my age to matches", modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.misc_onboarding_share_age), modifier = Modifier.weight(1f))
             Switch(checked = shareAge, onCheckedChange = { shareAge = it })
         }
         Spacer(Modifier.height(24.dp))
@@ -102,10 +103,10 @@ internal fun OnboardingScreen(viewModel: ChatViewModel) {
             enabled = canContinue,
             onClick = { viewModel.completeOnboarding(pseudonym, gender!!, ageValue!!, shareAge) },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Continue") }
+        ) { Text(stringResource(R.string.misc_onboarding_continue)) }
         Spacer(Modifier.height(8.dp))
         Text(
-            "You can add a photo and a short description later in Profile.",
+            stringResource(R.string.misc_onboarding_later_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
