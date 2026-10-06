@@ -67,7 +67,10 @@ internal class OpenChat(
             safetyNumber = SafetyNumber.of(ourPublicKey, peer.staticKey),
             remoteInterests = peer.profile.interests,
             remotePhotoHidden = peer.profile.photoHidden,
+            remoteStaticKey = peer.staticKey,
         )
+        // Contacts saved before keys were kept get theirs now (see ContactRendezvous).
+        contactStore.rememberKey(peer.peerId, peer.staticKey)
         // Unless kept back, our photo already went out with the profile.
         ourPhotoSent = !photoOnRequest() && ownPhoto() != null
     }

@@ -61,6 +61,9 @@ sealed interface ChatUiState {
         val incomingFile: FileOffer? = null,
         /** What the peer picked on their profile (see [app.frad.chat.profile.Interest]). */
         val remoteInterests: Set<app.frad.chat.profile.Interest> = emptySet(),
+        /** Their long-term public key - stored when they're saved as a contact, so the two can
+         *  find each other again (see [app.frad.chat.crypto.ContactRendezvous]). */
+        val remoteStaticKey: ByteArray = ByteArray(0),
         /** They have a photo they only swap on request (see [ChatEnvelope.PhotoRequest]). */
         val remotePhotoHidden: Boolean = false,
         val photoSwap: PhotoSwap? = null,
