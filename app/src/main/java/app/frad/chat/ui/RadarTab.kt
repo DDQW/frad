@@ -36,9 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import app.frad.chat.R
 import app.frad.chat.chat.ChatUiState
 import app.frad.chat.profile.Profile
 
@@ -79,23 +82,23 @@ private fun EndedChatCard(
     val name = Profile.displayName(ended.pseudonym, ended.peerId)
     androidx.compose.material3.Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Text("Your chat with $name ended.", style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(R.string.radar_ended_chat_with, name), style = MaterialTheme.typography.bodyMedium)
             Row {
-                if (!alreadySaved) TextButton(onClick = onSave) { Text("Save contact") }
-                TextButton(onClick = { confirmBlock = true }) { Text("Block", color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = { reporting = true }) { Text("Report…") }
+                if (!alreadySaved) TextButton(onClick = onSave) { Text(stringResource(R.string.radar_save_contact)) }
+                TextButton(onClick = { confirmBlock = true }) { Text(stringResource(R.string.radar_block), color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { reporting = true }) { Text(stringResource(R.string.radar_report_ellipsis)) }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("Dismiss") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.radar_dismiss)) }
             }
         }
     }
     if (confirmBlock) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmBlock = false },
-            title = { Text("Block $name?") },
-            text = { Text("You won't be matched with this person again, even if they reset the app.") },
-            confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text("Block") } },
-            dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("Cancel") } },
+            title = { Text(stringResource(R.string.radar_block_title, name)) },
+            text = { Text(stringResource(R.string.radar_block_body)) },
+            confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text(stringResource(R.string.radar_block)) } },
+            dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text(stringResource(R.string.radar_cancel)) } },
         )
     }
     if (reporting) {
@@ -125,8 +128,8 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
             onRandomChat = { viewModel.requestRandomChat() },
         )
         is ChatUiState.Paused -> PausedContent(reason = current.reason, onStop = { viewModel.setBrowsing(false) })
-        is ChatUiState.Connecting -> CenteredStatus(message = "Connecting…", onCancel = { viewModel.endChat() })
-        ChatUiState.Handshaking -> CenteredStatus(message = "Setting up an encrypted connection…", onCancel = { viewModel.endChat() })
+        is ChatUiState.Connecting -> CenteredStatus(message = stringResource(R.string.radar_connecting), onCancel = { viewModel.endChat() })
+        ChatUiState.Handshaking -> CenteredStatus(message = stringResource(R.string.radar_handshaking), onCancel = { viewModel.endChat() })
         is ChatUiState.Chatting -> {
             var saved by remember(current.remotePeerId) { mutableStateOf(viewModel.isContactSaved(current.remotePeerId)) }
             val transferStatus by viewModel.transferStatus.collectAsState()
@@ -184,7 +187,7 @@ internal fun CenteredStatus(message: String, onCancel: (() -> Unit)? = null) {
             Text(message, style = MaterialTheme.typography.bodyLarge)
             if (onCancel != null) {
                 Spacer(Modifier.height(16.dp))
-                TextButton(onClick = onCancel) { Text("Cancel") }
+                TextButton(onClick = onCancel) { Text(stringResource(R.string.radar_cancel)) }
             }
         }
     }
@@ -198,7 +201,7 @@ private fun EndedContent(reason: String, onDismiss: () -> Unit) {
             Spacer(Modifier.height(16.dp))
             Text(reason, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onDismiss) { Text("OK") }
+            Button(onClick = onDismiss) { Text(stringResource(R.string.radar_ok)) }
         }
     }
 }
@@ -215,9 +218,9 @@ private fun PausedContent(reason: String, onStop: () -> Unit) {
             Button(
                 onClick = { runCatching { context.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) } },
                 modifier = Modifier.fillMaxWidth(0.8f),
-            ) { Text("Turn on Bluetooth") }
+            ) { Text(stringResource(R.string.radar_turn_on_bluetooth)) }
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onStop) { Text("Stop being visible") }
+            TextButton(onClick = onStop) { Text(stringResource(R.string.radar_stop_being_visible)) }
         }
     }
 }
@@ -240,27 +243,27 @@ private fun IdleContent(
                 tint = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(20.dp))
-            Text("Find people", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.radar_find_people), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = mode == ChatMode.LOCAL_BLE,
                     onClick = { onModeChange(ChatMode.LOCAL_BLE) },
-                    label = { Text("Nearby (Bluetooth)") },
+                    label = { Text(stringResource(R.string.radar_mode_nearby)) },
                     leadingIcon = { Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 )
                 FilterChip(
                     selected = mode == ChatMode.WIDE_RANGE,
                     onClick = { onModeChange(ChatMode.WIDE_RANGE) },
                     enabled = wideRangeAvailable,
-                    label = { Text("Wide range (internet)") },
+                    label = { Text(stringResource(R.string.radar_mode_wide_range)) },
                     leadingIcon = { Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 )
             }
             if (!wideRangeAvailable) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Wide-range isn't built into this app - see p2p-go/README.md.",
+                    stringResource(R.string.radar_wide_range_not_built),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -268,13 +271,13 @@ private fun IdleContent(
             Spacer(Modifier.height(20.dp))
             val missing = wideRangeMissing.takeIf { mode == ChatMode.WIDE_RANGE }
             Text(
-                missing ?: "You're not visible to anyone right now.",
+                missing ?: stringResource(R.string.radar_not_visible),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (missing != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onStart, enabled = missing == null, modifier = Modifier.fillMaxWidth(0.8f)) { Text("Become visible") }
+            Button(onClick = onStart, enabled = missing == null, modifier = Modifier.fillMaxWidth(0.8f)) { Text(stringResource(R.string.radar_become_visible)) }
         }
     }
 }
@@ -297,7 +300,8 @@ private fun BrowsingContent(
             RadarView(peers)
             Spacer(Modifier.height(20.dp))
             Text(
-                if (peerCount == 0) "Looking for people…" else "$peerCount people found right now",
+                if (peerCount == 0) stringResource(R.string.radar_looking_for_people)
+                else pluralStringResource(R.plurals.radar_people_found, peerCount, peerCount),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -312,17 +316,18 @@ private fun BrowsingContent(
             }
             Spacer(Modifier.height(24.dp))
             Button(onClick = onRandomChat, modifier = Modifier.fillMaxWidth(0.8f)) {
-                Text("Chat with someone nearby")
+                Text(stringResource(R.string.radar_chat_with_someone_nearby))
             }
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onStop) { Text("Stop being visible") }
+            TextButton(onClick = onStop) { Text(stringResource(R.string.radar_stop_being_visible)) }
             Spacer(Modifier.height(16.dp))
             VisibilityLimit(visibleUntilMillis, onVisibleFor)
         }
     }
 }
 
-private val VISIBILITY_LIMITS = listOf(null to "Until I stop", 30 to "30 min", 60 to "1 h", 180 to "3 h")
+/** Minutes the visibility chips offer; null is "until I stop". */
+private val VISIBILITY_LIMITS = listOf(null, 30, 60, 180)
 
 /** "Stay visible: until I stop / 30 min / 1 h / 3 h" - see [ChatViewModel.setVisibleFor]. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -339,12 +344,18 @@ private fun VisibilityLimit(visibleUntilMillis: Long, onVisibleFor: (Int?) -> Un
     }
     val remainingMinutes = if (visibleUntilMillis > 0) ((visibleUntilMillis - now) / 60_000).coerceAtLeast(0) else null
     Text(
-        if (remainingMinutes != null) "Visible for about $remainingMinutes more min" else "Stay visible",
+        if (remainingMinutes != null) stringResource(R.string.radar_visible_remaining, remainingMinutes)
+        else stringResource(R.string.radar_stay_visible),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        VISIBILITY_LIMITS.forEach { (minutes, label) ->
+        VISIBILITY_LIMITS.forEach { minutes ->
+            val label = when {
+                minutes == null -> stringResource(R.string.radar_visible_until_stop)
+                minutes < 60 -> stringResource(R.string.radar_visible_minutes, minutes)
+                else -> stringResource(R.string.radar_visible_hours, minutes / 60)
+            }
             FilterChip(
                 selected = if (visibleUntilMillis == 0L) minutes == null else picked == minutes,
                 onClick = { picked = minutes; onVisibleFor(minutes) },

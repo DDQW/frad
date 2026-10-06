@@ -17,12 +17,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
 import kotlin.math.sin
+import app.frad.chat.R
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.ProximityBand
 
@@ -43,8 +45,12 @@ internal fun RadarView(peers: List<NearbyPeer>, modifier: Modifier = Modifier, s
         label = "sweep",
     )
     val bands = peers.groupingBy { ProximityBand.of(it.signalStrength) }.eachCount()
-    val description = "${bands[ProximityBand.VERY_CLOSE] ?: 0} very close, ${bands[ProximityBand.NEARBY] ?: 0} nearby, " +
-        "${bands[ProximityBand.FURTHER] ?: 0} further away"
+    val description = stringResource(
+        R.string.radar_view_description,
+        bands[ProximityBand.VERY_CLOSE] ?: 0,
+        bands[ProximityBand.NEARBY] ?: 0,
+        bands[ProximityBand.FURTHER] ?: 0,
+    )
 
     Canvas(modifier = modifier.size(size).semantics { contentDescription = description }) {
         val center = Offset(this.size.width / 2, this.size.height / 2)

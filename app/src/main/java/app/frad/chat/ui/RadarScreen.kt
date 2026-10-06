@@ -1,5 +1,6 @@
 package app.frad.chat.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,16 +38,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.frad.chat.R
 import app.frad.chat.chat.ChatUiState
 import app.frad.chat.profile.Profile
 
-private enum class Tab(val label: String, val icon: ImageVector) {
-    RADAR("Radar", Icons.Default.Wifi),
-    CONTACTS("Contacts", Icons.Default.Group),
-    BLOCKED("Blocked", Icons.Default.Block),
-    PROFILE("Profile", Icons.Default.Person),
+private enum class Tab(@StringRes val label: Int, val icon: ImageVector) {
+    RADAR(R.string.radar_tab_radar, Icons.Default.Wifi),
+    CONTACTS(R.string.radar_tab_contacts, Icons.Default.Group),
+    BLOCKED(R.string.radar_tab_blocked, Icons.Default.Block),
+    PROFILE(R.string.radar_tab_profile, Icons.Default.Person),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,11 +95,12 @@ fun RadarScreen(
             AnimatedVisibility(visible = !busyWithChat) {
                 NavigationBar {
                     Tab.entries.forEach { entry ->
+                        val label = stringResource(entry.label)
                         NavigationBarItem(
                             selected = tab == entry,
                             onClick = { tab = entry },
-                            icon = { Icon(entry.icon, contentDescription = entry.label) },
-                            label = { Text(entry.label) },
+                            icon = { Icon(entry.icon, contentDescription = label) },
+                            label = { Text(label) },
                         )
                     }
                 }
@@ -127,25 +132,25 @@ private fun PermissionGate(onRequestPermissions: () -> Unit, blocked: Boolean) {
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                "FRAD needs Bluetooth permission to find people nearby.",
+                stringResource(R.string.radar_permission_needed),
                 style = MaterialTheme.typography.titleMedium,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "It never asks for your exact location.",
+                stringResource(R.string.radar_permission_no_location),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (blocked) {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Android won't ask again - allow FRAD's permissions on its settings page.",
+                    stringResource(R.string.radar_permission_blocked),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onRequestPermissions) { Text(if (blocked) "Open settings" else "Grant permissions") }
+            Button(onClick = onRequestPermissions) { Text(stringResource(if (blocked) R.string.radar_open_settings else R.string.radar_grant_permissions)) }
         }
     }
 }
@@ -158,11 +163,11 @@ private fun NodeImportDialog(viewModel: ChatViewModel) {
     if (pending.isEmpty()) return
     AlertDialog(
         onDismissRequest = viewModel::dismissNodeImport,
-        title = { Text("Add ${if (pending.size == 1) "this server" else "${pending.size} servers"}?") },
+        title = { Text(pluralStringResource(R.plurals.radar_add_servers_title, pending.size, pending.size)) },
         text = {
             Column {
                 Text(
-                    "Wide-range discovery will also use these bootstrap/relay nodes. Only add servers from someone you trust.",
+                    stringResource(R.string.radar_add_servers_body),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -171,7 +176,7 @@ private fun NodeImportDialog(viewModel: ChatViewModel) {
                 }
             }
         },
-        confirmButton = { TextButton(onClick = viewModel::confirmNodeImport) { Text("Add") } },
-        dismissButton = { TextButton(onClick = viewModel::dismissNodeImport) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = viewModel::confirmNodeImport) { Text(stringResource(R.string.radar_add)) } },
+        dismissButton = { TextButton(onClick = viewModel::dismissNodeImport) { Text(stringResource(R.string.radar_cancel)) } },
     )
 }
