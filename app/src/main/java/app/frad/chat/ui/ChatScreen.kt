@@ -76,6 +76,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -83,6 +85,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import app.frad.chat.R
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MessageKind
@@ -247,35 +250,35 @@ internal fun ChatContent(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            if (peerTyping) "typing…" else genderAgeLine(remoteGender, remoteAge),
+                            if (peerTyping) stringResource(R.string.chat_typing) else genderAgeLine(remoteGender, remoteAge),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (peerTyping) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Box {
                         IconButton(onClick = { showMoreMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.chat_more))
                         }
                         DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
                             DropdownMenuItem(
-                                text = { Text("Verify safety number") },
+                                text = { Text(stringResource(R.string.chat_verify_safety_number)) },
                                 leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null) },
                                 onClick = { showMoreMenu = false; showSafetyNumber = true },
                             )
                             DropdownMenuItem(
-                                text = { Text("Block…") },
+                                text = { Text(stringResource(R.string.chat_block_ellipsis)) },
                                 leadingIcon = { Icon(Icons.Default.Block, contentDescription = null) },
                                 onClick = { showMoreMenu = false; confirmBlock = true },
                             )
                             DropdownMenuItem(
-                                text = { Text("Report…") },
+                                text = { Text(stringResource(R.string.chat_report_ellipsis)) },
                                 leadingIcon = { Icon(Icons.Default.Report, contentDescription = null) },
                                 onClick = { showMoreMenu = false; reportDialog = true },
                             )
                         }
                     }
                     IconButton(onClick = onLeave) {
-                        Icon(Icons.Default.Close, contentDescription = "Leave chat")
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.chat_leave))
                     }
                 }
                 if (remoteBio.isNotBlank()) {
@@ -299,20 +302,28 @@ internal fun ChatContent(
                         AssistChip(
                             onClick = onRequestPhotoSwap,
                             enabled = photoSwap == null,
-                            label = { Text(if (photoSwap == PhotoSwap.WE_ASKED) "Asked to swap photos…" else "Swap photos") },
+                            label = {
+                                Text(
+                                    if (photoSwap == PhotoSwap.WE_ASKED) {
+                                        stringResource(R.string.chat_photo_swap_asked)
+                                    } else {
+                                        stringResource(R.string.chat_swap_photos)
+                                    },
+                                )
+                            },
                         )
                     }
                     AssistChip(
                         onClick = onSaveContact,
                         enabled = !alreadySaved,
-                        label = { Text(if (alreadySaved) "Saved" else "Save contact") },
+                        label = { Text(if (alreadySaved) stringResource(R.string.chat_saved) else stringResource(R.string.chat_save_contact)) },
                         leadingIcon = {
                             Icon(if (alreadySaved) Icons.Default.Person else Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
                     )
                     AssistChip(
                         onClick = { confirmBlock = true },
-                        label = { Text("Block") },
+                        label = { Text(stringResource(R.string.chat_block)) },
                         leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp)) },
                         colors = AssistChipDefaults.assistChipColors(labelColor = MaterialTheme.colorScheme.error, leadingIconContentColor = MaterialTheme.colorScheme.error),
                     )
@@ -325,7 +336,7 @@ internal fun ChatContent(
             // An empty chat: a few openers, from what both picked (see Interest.icebreakers).
             val openers = remember(remoteInterests, myInterests) { Interest.icebreakers(remoteInterests intersect myInterests) }
             Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.Bottom) {
-                Text("Not sure how to start?", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.chat_openers_title), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 openers.forEach { opener ->
                     AssistChip(onClick = { draft = opener }, label = { Text(opener) })
                 }
@@ -338,10 +349,10 @@ internal fun ChatContent(
         if (confirmBlock) {
             AlertDialog(
                 onDismissRequest = { confirmBlock = false },
-                title = { Text("Block ${Profile.displayName(remotePseudonym, remotePeerId)}?") },
-                text = { Text("This ends the chat. You won't be matched with this person again, even if they reset the app.") },
-                confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text("Block") } },
-                dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("Cancel") } },
+                title = { Text(stringResource(R.string.chat_block_title, Profile.displayName(remotePseudonym, remotePeerId))) },
+                text = { Text(stringResource(R.string.chat_block_body)) },
+                confirmButton = { TextButton(onClick = { confirmBlock = false; onBlock() }) { Text(stringResource(R.string.chat_block)) } },
+                dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text(stringResource(R.string.chat_cancel)) } },
             )
         }
         if (reportDialog) {
@@ -350,39 +361,38 @@ internal fun ChatContent(
         if (confirmSensitive.isNotEmpty()) {
             AlertDialog(
                 onDismissRequest = { confirmSensitive = emptySet() },
-                title = { Text("Share this?") },
+                title = { Text(stringResource(R.string.chat_share_title)) },
                 text = {
-                    Text(
-                        "This looks like it contains ${confirmSensitive.joinToString(" and ") { it.label }}. " +
-                            "${remotePseudonym} isn't one of your contacts yet - once sent, it can't be taken back.",
-                    )
+                    // "a and b and c", with the localized "and".
+                    val found = confirmSensitive.map { it.label }
+                        .reduce { acc, label -> stringResource(R.string.chat_join_and, acc, label) }
+                    Text(stringResource(R.string.chat_share_body, found, remotePseudonym))
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         confirmSensitive = emptySet()
                         onSend(draft)
                         draft = ""
-                    }) { Text("Send anyway") }
+                    }) { Text(stringResource(R.string.chat_send_anyway)) }
                 },
-                dismissButton = { TextButton(onClick = { confirmSensitive = emptySet() }) { Text("Edit") } },
+                dismissButton = { TextButton(onClick = { confirmSensitive = emptySet() }) { Text(stringResource(R.string.chat_edit)) } },
             )
         }
         if (showSafetyNumber) {
             AlertDialog(
                 onDismissRequest = { showSafetyNumber = false },
-                title = { Text("Safety number") },
+                title = { Text(stringResource(R.string.chat_safety_number_title)) },
                 text = {
                     Column {
                         Text(
-                            "Compare this number with the one on ${remotePseudonym}'s phone - in person or over another " +
-                                "channel. If they match, nobody is listening in between you.",
+                            stringResource(R.string.chat_safety_number_body, remotePseudonym),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         Spacer(Modifier.height(12.dp))
                         Text(safetyNumber, style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Monospace)
                     }
                 },
-                confirmButton = { TextButton(onClick = { showSafetyNumber = false }) { Text("Close") } },
+                confirmButton = { TextButton(onClick = { showSafetyNumber = false }) { Text(stringResource(R.string.chat_close)) } },
             )
         }
 
@@ -390,12 +400,12 @@ internal fun ChatContent(
             Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Text(
-                        "${Profile.displayName(remotePseudonym, remotePeerId)} would like to swap profile photos.",
+                        stringResource(R.string.chat_photo_swap_request, Profile.displayName(remotePseudonym, remotePeerId)),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { onAnswerPhotoSwap(false) }) { Text("No thanks") }
-                        TextButton(onClick = { onAnswerPhotoSwap(true) }) { Text("Swap") }
+                        TextButton(onClick = { onAnswerPhotoSwap(false) }) { Text(stringResource(R.string.chat_no_thanks)) }
+                        TextButton(onClick = { onAnswerPhotoSwap(true) }) { Text(stringResource(R.string.chat_swap)) }
                     }
                 }
             }
@@ -411,11 +421,11 @@ internal fun ChatContent(
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        transferStatus + (transferProgress?.let { "  ${(it * 100).toInt()} %" } ?: ""),
+                        transferStatus + (transferProgress?.let { "  " + stringResource(R.string.chat_percent, (it * 100).toInt()) } ?: ""),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onCancelTransfer) { Text("Cancel") }
+                    TextButton(onClick = onCancelTransfer) { Text(stringResource(R.string.chat_cancel)) }
                 }
                 if (transferProgress != null) {
                     LinearProgressIndicator(progress = { transferProgress }, modifier = Modifier.fillMaxWidth())
@@ -436,7 +446,7 @@ internal fun ChatContent(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onDismissError) { Text("Dismiss") }
+                    TextButton(onClick = onDismissError) { Text(stringResource(R.string.chat_dismiss)) }
                 }
             }
         }
@@ -450,26 +460,26 @@ internal fun ChatContent(
                     if (fileTransferAvailable) {
                         Box {
                             IconButton(onClick = { showAttachMenu = true }, enabled = transferStatus == null && !isRecordingAudio) {
-                                Icon(Icons.Default.AttachFile, contentDescription = "Attach")
+                                Icon(Icons.Default.AttachFile, contentDescription = stringResource(R.string.chat_attach))
                             }
                             DropdownMenu(expanded = showAttachMenu, onDismissRequest = { showAttachMenu = false }) {
                                 DropdownMenuItem(
-                                    text = { Text("File") },
+                                    text = { Text(stringResource(R.string.chat_attach_file)) },
                                     leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
                                     onClick = { showAttachMenu = false; filePicker.launch(arrayOf("*/*")) },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Photo") },
+                                    text = { Text(stringResource(R.string.chat_attach_photo)) },
                                     leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
                                     onClick = { showAttachMenu = false; startPhotoCapture() },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Video") },
+                                    text = { Text(stringResource(R.string.chat_attach_video)) },
                                     leadingIcon = { Icon(Icons.Default.Videocam, contentDescription = null) },
                                     onClick = { showAttachMenu = false; startVideoCapture() },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Voice message") },
+                                    text = { Text(stringResource(R.string.chat_attach_voice)) },
                                     leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null) },
                                     onClick = {
                                         showAttachMenu = false
@@ -490,12 +500,12 @@ internal fun ChatContent(
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(horizontal = 8.dp),
                         )
-                        Text("Recording voice message…", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.chat_recording_voice), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         IconButton(onClick = { cancelAudioRecording() }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel recording")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.chat_cancel_recording))
                         }
                         IconButton(onClick = { sendAudioRecording() }, colors = IconButtonDefaults.filledIconButtonColors()) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice message")
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.chat_send_voice))
                         }
                     } else {
                         // Only shown close to the limit, so it doesn't take up room the rest of the time.
@@ -524,7 +534,7 @@ internal fun ChatContent(
                                 draft = new.take(MAX_MESSAGE_CHARS)
                             },
                             modifier = Modifier.weight(1f),
-                            placeholder = { Text("Message") },
+                            placeholder = { Text(stringResource(R.string.chat_message_placeholder)) },
                             shape = RoundedCornerShape(24.dp),
                             maxLines = 5,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -536,13 +546,13 @@ internal fun ChatContent(
                             onClick = sendDraft,
                             colors = IconButtonDefaults.filledIconButtonColors(),
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.chat_send))
                         }
                     }
                 }
                 if (audioPermissionDenied) {
                     Text(
-                        "Microphone permission denied - can't record a voice message.",
+                        stringResource(R.string.chat_mic_denied),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
@@ -561,21 +571,22 @@ private fun IncomingFileCard(fromName: String, offer: FileOffer, onAnswer: (Bool
     Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(
-                "$fromName wants to send you ${offer.fileName} (${readableSize(offer.sizeBytes)})",
+                stringResource(R.string.chat_incoming_file, fromName, offer.fileName, readableSize(offer.sizeBytes)),
                 style = MaterialTheme.typography.bodyMedium,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { onAnswer(false) }) { Text("Decline") }
-                TextButton(onClick = { onAnswer(true) }) { Text("Accept") }
+                TextButton(onClick = { onAnswer(false) }) { Text(stringResource(R.string.chat_decline)) }
+                TextButton(onClick = { onAnswer(true) }) { Text(stringResource(R.string.chat_accept)) }
             }
         }
     }
 }
 
+@Composable
 private fun readableSize(bytes: Long): String = when {
-    bytes >= 1024 * 1024 -> String.format(java.util.Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
-    bytes >= 1024 -> "${bytes / 1024} KB"
-    else -> "$bytes bytes"
+    bytes >= 1024 * 1024 -> stringResource(R.string.chat_size_mb, bytes / (1024.0 * 1024.0))
+    bytes >= 1024 -> stringResource(R.string.chat_size_kb, bytes / 1024)
+    else -> pluralStringResource(R.plurals.chat_size_bytes, bytes.toInt(), bytes.toInt())
 }
 
 /** @param veilTheirImages show pictures the other person sent pixelated until tapped. */
@@ -649,31 +660,44 @@ private fun timeOf(message: ChatMessage): String =
 
 @Composable
 internal fun ReportDialog(onDismiss: () -> Unit, onReport: (String) -> Unit) {
-    val reasons = listOf("Spam or scam", "Harassment or threats", "Sexual or explicit content", "Pretending to be someone else", "Seems underage", "Something else")
-    var selected by remember { mutableStateOf<String?>(null) }
+    // The chosen reason is kept as shown (in the user's language) - it's a note for them, nobody else reads it.
+    val reasons = listOf(
+        stringResource(R.string.chat_report_reason_spam),
+        stringResource(R.string.chat_report_reason_harassment),
+        stringResource(R.string.chat_report_reason_sexual),
+        stringResource(R.string.chat_report_reason_impersonation),
+        stringResource(R.string.chat_report_reason_underage),
+        stringResource(R.string.chat_report_reason_other),
+    )
+    // By position, so a language change while the dialog is open keeps the choice.
+    var selected by remember { mutableStateOf<Int?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Report and block") },
+        title = { Text(stringResource(R.string.chat_report_title)) },
         text = {
             Column {
                 Text(
-                    "There's no company that receives reports - this blocks the person and keeps a note of why on your phone.",
+                    stringResource(R.string.chat_report_body),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
-                reasons.forEach { reason ->
+                reasons.forEachIndexed { index, reason ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { selected = reason },
+                        modifier = Modifier.fillMaxWidth().clickable { selected = index },
                     ) {
-                        RadioButton(selected = selected == reason, onClick = { selected = reason })
+                        RadioButton(selected = selected == index, onClick = { selected = index })
                         Text(reason)
                     }
                 }
             }
         },
-        confirmButton = { TextButton(enabled = selected != null, onClick = { onReport(selected!!) }) { Text("Report") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = {
+            TextButton(enabled = selected != null, onClick = { selected?.let { onReport(reasons[it]) } }) {
+                Text(stringResource(R.string.chat_report))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.chat_cancel)) } },
     )
 }
 
@@ -697,7 +721,7 @@ private fun MessageBubble(message: ChatMessage, veiled: Boolean, onOpenFile: () 
                     }
                     if (warnings.isNotEmpty()) {
                         Text(
-                            "⚠ Careful: " + warnings.joinToString(", ") { it.label },
+                            stringResource(R.string.chat_careful, warnings.joinToString(", ") { it.label }),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -733,7 +757,7 @@ private fun FileMessageContent(message: ChatMessage, veiled: Boolean, onOpen: ()
             }
         }.value
         Column {
-            Text(message.fileName ?: "Image", style = MaterialTheme.typography.bodySmall)
+            Text(message.fileName ?: stringResource(R.string.chat_image), style = MaterialTheme.typography.bodySmall)
             if (bitmap != null) {
                 Spacer(Modifier.height(4.dp))
                 Box(contentAlignment = Alignment.Center) {
@@ -749,7 +773,7 @@ private fun FileMessageContent(message: ChatMessage, veiled: Boolean, onOpen: ()
                     )
                     if (!revealed) {
                         Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), shape = RoundedCornerShape(12.dp)) {
-                            Text("Tap to view", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                            Text(stringResource(R.string.chat_tap_to_view), style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                         }
                     }
                 }
@@ -759,17 +783,24 @@ private fun FileMessageContent(message: ChatMessage, veiled: Boolean, onOpen: ()
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.AttachFile, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("${message.fileName} (${message.sizeBytes / 1024} KB)")
+            Text(
+                stringResource(
+                    R.string.chat_file_with_size,
+                    message.fileName.orEmpty(),
+                    stringResource(R.string.chat_size_kb, message.sizeBytes / 1024),
+                ),
+            )
             Spacer(Modifier.width(6.dp))
-            TextButton(onClick = onOpen) { Text("Open") }
+            TextButton(onClick = onOpen) { Text(stringResource(R.string.chat_open)) }
         }
     }
 }
 
+@Composable
 private fun genderAgeLine(gender: Gender?, age: Int?): String {
     val genderLabel = when (gender) {
-        Gender.MALE -> "Male"
-        Gender.FEMALE -> "Female"
+        Gender.MALE -> stringResource(R.string.chat_gender_male)
+        Gender.FEMALE -> stringResource(R.string.chat_gender_female)
         null -> null
     }
     return listOfNotNull(genderLabel, age?.toString()).joinToString(", ")
