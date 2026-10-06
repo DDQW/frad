@@ -51,11 +51,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import app.frad.chat.AppLock
+import app.frad.chat.R
 import app.frad.chat.qr.QrCode
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Interest
@@ -64,8 +66,18 @@ import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.wideradius.AreaLookup
 import app.frad.chat.wideradius.Geohash
 
-private val RADIUS_PRESETS = listOf(20.0 to "Neighborhood", 75.0 to "City", 600.0 to "Region", 20_000.0 to "Worldwide")
-private val RETENTION_PRESETS = listOf(0 to "Keep", 1 to "1 day", 7 to "1 week", 30 to "1 month")
+private val RADIUS_PRESETS = listOf(
+    20.0 to R.string.profile_radius_neighborhood,
+    75.0 to R.string.profile_radius_city,
+    600.0 to R.string.profile_radius_region,
+    20_000.0 to R.string.profile_radius_worldwide,
+)
+private val RETENTION_PRESETS = listOf(
+    0 to R.string.profile_retention_keep,
+    1 to R.string.profile_retention_1_day,
+    7 to R.string.profile_retention_1_week,
+    30 to R.string.profile_retention_1_month,
+)
 
 // FlowRow: chip and button rows wrap on narrow screens or with large system fonts.
 @OptIn(ExperimentalLayoutApi::class)
@@ -95,7 +107,8 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var areaNameDraft by remember { mutableStateOf("") }
-    var areaStatus by remember { mutableStateOf<String?>(null) }
+    // String resource id of the area lookup's status/error line, or null when there is none.
+    var areaStatus by remember { mutableStateOf<Int?>(null) }
     var resolvingArea by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -120,10 +133,10 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
         locationDenied = false
         scope.launch {
             resolvingArea = true
-            areaStatus = "Getting your area…"
+            areaStatus = R.string.profile_area_getting
             val geohash = viewModel.useCurrentAreaAsGeohash()
             if (geohash == null) {
-                areaStatus = "Couldn't get a location fix - check that location is switched on, then try again."
+                areaStatus = R.string.profile_area_no_fix
             } else {
                 areaNameDraft = AreaLookup.nameFor(context, geohash) ?: geohash
                 areaStatus = null
@@ -133,7 +146,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     }
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
-        SectionCard(title = "Your profile") {
+        SectionCard(title = stringResource(R.string.profile_section_your_profile)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier.clickable {
@@ -144,14 +157,14 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 }
                 Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("Others see you as", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.profile_others_see_you_as), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(Profile.displayName(draft, viewModel.myPeerId), fontWeight = FontWeight.SemiBold)
                     Row {
                         TextButton(onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
-                            Text(if (photoBytes == null) "Add photo" else "Change photo")
+                            Text(stringResource(if (photoBytes == null) R.string.profile_add_photo else R.string.profile_change_photo))
                         }
                         if (photoBytes != null) {
-                            TextButton(onClick = { ProfilePhoto.clear(context); photoBytes = null }) { Text("Remove") }
+                            TextButton(onClick = { ProfilePhoto.clear(context); photoBytes = null }) { Text(stringResource(R.string.profile_remove_photo)) }
                         }
                     }
                 }
@@ -160,40 +173,40 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it.take(Profile.MAX_LENGTH) },
-                label = { Text("Pseudonym") },
+                label = { Text(stringResource(R.string.profile_pseudonym_label)) },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(12.dp))
-            Text("Gender", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(stringResource(R.string.profile_gender_label), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = genderDraft == Gender.MALE, onClick = { genderDraft = Gender.MALE }, label = { Text("Male") })
-                FilterChip(selected = genderDraft == Gender.FEMALE, onClick = { genderDraft = Gender.FEMALE }, label = { Text("Female") })
+                FilterChip(selected = genderDraft == Gender.MALE, onClick = { genderDraft = Gender.MALE }, label = { Text(stringResource(R.string.profile_gender_male)) })
+                FilterChip(selected = genderDraft == Gender.FEMALE, onClick = { genderDraft = Gender.FEMALE }, label = { Text(stringResource(R.string.profile_gender_female)) })
             }
             Spacer(Modifier.height(12.dp))
             val ageValid = (ageDraft.toIntOrNull() ?: 0) in Profile.MIN_AGE..Profile.MAX_AGE
             OutlinedTextField(
                 value = ageDraft,
                 onValueChange = { ageDraft = it.filter(Char::isDigit).take(3) },
-                label = { Text("Age") },
+                label = { Text(stringResource(R.string.profile_age_label)) },
                 isError = !ageValid,
-                supportingText = { if (!ageValid) Text("FRAD is for people aged ${Profile.MIN_AGE} and over.") },
+                supportingText = { if (!ageValid) Text(stringResource(R.string.profile_age_too_young, Profile.MIN_AGE)) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Show my age to matches", modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.profile_share_age), modifier = Modifier.weight(1f))
                 Switch(checked = shareAgeDraft, onCheckedChange = { shareAgeDraft = it })
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Show my photo only once we both agree to swap", modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.profile_photo_on_request), modifier = Modifier.weight(1f))
                 Switch(checked = photoOnRequestDraft, onCheckedChange = { photoOnRequestDraft = it })
             }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = bioDraft,
                 onValueChange = { bioDraft = it.take(Profile.MAX_BIO_LENGTH) },
-                label = { Text("Short description (optional)") },
+                label = { Text(stringResource(R.string.profile_bio_label)) },
                 minLines = 2,
                 maxLines = 4,
                 modifier = Modifier.fillMaxWidth(),
@@ -205,7 +218,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "Interests (up to ${Interest.MAX_PER_PROFILE}) - matches see them, shared ones suggest a first question",
+                stringResource(R.string.profile_interests_hint, Interest.MAX_PER_PROFILE),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -233,25 +246,21 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                     viewModel.interests = interestsDraft
                     viewModel.photoOnRequest = photoOnRequestDraft
                 },
-            ) { Text("Save") }
+            ) { Text(stringResource(R.string.profile_save_button)) }
             Spacer(Modifier.height(12.dp))
             Text(
-                "The part after # is unique to your device, so people who picked the same pseudonym as you stay distinguishable. " +
-                    "Your photo, gender, age and description are shown automatically to whoever you match with - the photo is " +
-                    "kept deliberately tiny/low-quality so it doesn't slow down connecting.",
+                stringResource(R.string.profile_pseudonym_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        SectionCard(title = "Visibility") {
+        SectionCard(title = stringResource(R.string.profile_section_visibility)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Always visible", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.profile_always_visible), fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Keep FRAD discoverable in the background, even when it's not open, " +
-                            "so people can actually find and message you. Shows an ongoing " +
-                            "notification while active - never a silent background broadcast.",
+                        stringResource(R.string.profile_always_visible_explainer),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -266,10 +275,9 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             }
         }
 
-        SectionCard(title = "Wide-range (internet)") {
+        SectionCard(title = stringResource(R.string.profile_section_wide_range)) {
             Text(
-                "Your area, as a place name - it's only ever reduced to a coarse cell roughly the " +
-                    "size of the search radius below before it's shared, never your exact location.",
+                stringResource(R.string.profile_area_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -277,8 +285,8 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             OutlinedTextField(
                 value = areaNameDraft,
                 onValueChange = { areaNameDraft = it; areaStatus = null },
-                label = { Text("Area") },
-                placeholder = { Text("e.g. Berlin, Germany") },
+                label = { Text(stringResource(R.string.profile_area_label)) },
+                placeholder = { Text(stringResource(R.string.profile_area_placeholder)) },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
@@ -286,7 +294,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 OutlinedButton(onClick = { locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION) }) {
                     Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Use my area")
+                    Text(stringResource(R.string.profile_use_my_area))
                 }
                 Button(onClick = {
                     val query = areaNameDraft.trim()
@@ -302,42 +310,49 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                             viewModel.coarseGeohash = geohash
                             areaStatus = null
                         } else {
-                            areaStatus = "Couldn't find that place - try a nearby city name."
+                            areaStatus = R.string.profile_area_not_found
                         }
                         resolvingArea = false
                     }
-                }) { Text("Save area") }
+                }) { Text(stringResource(R.string.profile_save_area)) }
             }
             if (resolvingArea) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
-                    Text("Looking that up…", style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.profile_area_looking_up), style = MaterialTheme.typography.bodySmall)
                 }
             }
             if (locationDenied) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Location permission denied - type your area's name instead.",
+                    stringResource(R.string.profile_location_denied),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-            if (areaStatus != null) {
+            val status = areaStatus
+            if (status != null) {
                 Spacer(Modifier.height(4.dp))
-                Text(areaStatus!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Text(stringResource(status), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("Search radius: ${RADIUS_PRESETS.firstOrNull { it.first == radiusKm }?.second ?: "${radiusKm.toInt()} km"}")
+            val radiusPreset = RADIUS_PRESETS.firstOrNull { it.first == radiusKm }
+            val radiusLabel = if (radiusPreset != null) {
+                stringResource(radiusPreset.second)
+            } else {
+                stringResource(R.string.profile_radius_km, radiusKm.toInt())
+            }
+            Text(stringResource(R.string.profile_search_radius, radiusLabel))
             Spacer(Modifier.height(8.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RADIUS_PRESETS.forEach { (km, label) ->
+                RADIUS_PRESETS.forEach { (km, labelRes) ->
                     FilterChip(
                         selected = km == radiusKm,
                         onClick = { radiusKm = km; viewModel.searchRadiusKm = km },
-                        label = { Text(label) },
+                        label = { Text(stringResource(labelRes)) },
                     )
                 }
             }
@@ -345,11 +360,9 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Use public servers", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.profile_use_public_servers), fontWeight = FontWeight.SemiBold)
                     Text(
-                        "FRAD's public server list (kept up to date by a crawler, fetched from two mirrors) " +
-                            "and servers learned from other servers and phones. Phones swap these public " +
-                            "servers in every chat - never the ones you add below.",
+                        stringResource(R.string.profile_public_servers_explainer),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -358,8 +371,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             }
             Spacer(Modifier.height(12.dp))
             Text(
-                "Your own servers (bootstrap/relay nodes), one multiaddr per line - optional, tried " +
-                    "first. Anyone can run one (see p2p-go/README.md).",
+                stringResource(R.string.profile_own_servers_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -368,26 +380,26 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 value = bootstrapDraft,
                 onValueChange = { bootstrapDraft = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Bootstrap/relay multiaddrs") },
+                label = { Text(stringResource(R.string.profile_bootstrap_label)) },
             )
             Spacer(Modifier.height(8.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { viewModel.bootstrapNodes = bootstrapDraft.lines().map { it.trim() }.filter { it.isNotEmpty() } }) {
-                    Text("Save nodes")
+                    Text(stringResource(R.string.profile_save_nodes))
                 }
                 val shareLink = viewModel.nodeShareLink()
+                val shareServersTitle = stringResource(R.string.profile_share_servers)
                 OutlinedButton(
                     enabled = shareLink != null && savedNodes.isNotEmpty(),
                     onClick = {
                         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shareLink)
-                        context.startActivity(Intent.createChooser(send, "Share servers"))
+                        context.startActivity(Intent.createChooser(send, shareServersTitle))
                     },
-                ) { Text("Share servers") }
-                OutlinedButton(enabled = shareLink != null && savedNodes.isNotEmpty(), onClick = { showNodeQr = true }) { Text("QR code") }
+                ) { Text(shareServersTitle) }
+                OutlinedButton(enabled = shareLink != null && savedNodes.isNotEmpty(), onClick = { showNodeQr = true }) { Text(stringResource(R.string.profile_qr_code_button)) }
             }
             Text(
-                "Sharing sends a frad://node link, the QR code shows the same link for another phone's camera - " +
-                    "whoever opens it with FRAD is asked whether to add these nodes.",
+                stringResource(R.string.profile_share_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -395,11 +407,9 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Hide my IP address", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.profile_hide_ip), fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Route every wide-range connection through the nodes above, so matches never learn " +
-                            "your IP address. Slower, and needs at least one node that relays. Applies the next " +
-                            "time wide-range is switched on.",
+                        stringResource(R.string.profile_hide_ip_explainer),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -408,18 +418,15 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             }
         }
 
-        SectionCard(title = "Privacy & security") {
+        SectionCard(title = stringResource(R.string.profile_section_privacy)) {
             val lockAvailable = remember { AppLock.available(context) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("App lock", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.profile_app_lock), fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (lockAvailable) {
-                            "Ask for your fingerprint, face or screen lock whenever FRAD is opened, and hide its " +
-                                "content from screenshots and the recent-apps view."
-                        } else {
-                            "Set a screen lock (PIN, pattern or password) in your phone's settings to use this."
-                        },
+                        stringResource(
+                            if (lockAvailable) R.string.profile_app_lock_explainer else R.string.profile_app_lock_unavailable,
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -431,28 +438,26 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 )
             }
             Spacer(Modifier.height(16.dp))
-            Text("Delete saved chats after", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.profile_retention_title), fontWeight = FontWeight.SemiBold)
             Text(
-                "Chats are only ever kept with people you saved as a contact, encrypted on this phone. " +
-                    "Older messages - and files received with them - are deleted automatically.",
+                stringResource(R.string.profile_retention_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(4.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RETENTION_PRESETS.forEach { (days, label) ->
+                RETENTION_PRESETS.forEach { (days, labelRes) ->
                     FilterChip(
                         selected = days == retentionDays,
                         onClick = { retentionDays = days; viewModel.historyRetentionDays = days },
-                        label = { Text(label) },
+                        label = { Text(stringResource(labelRes)) },
                     )
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("Delete all my data", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.profile_delete_all_title), fontWeight = FontWeight.SemiBold)
             Text(
-                "Erases your identity, profile, contacts, chat history, received files and block list from this " +
-                    "phone and closes FRAD. People you chatted with keep only what they saved themselves.",
+                stringResource(R.string.profile_delete_all_explainer),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -463,7 +468,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                     containerColor = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError,
                 ),
-            ) { Text("Delete everything") }
+            ) { Text(stringResource(R.string.profile_delete_everything)) }
         }
     }
 
@@ -472,41 +477,41 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
         val qr = remember(link) { link?.let { runCatching { qrBitmap(QrCode.encode(it)).asImageBitmap() }.getOrNull() } }
         AlertDialog(
             onDismissRequest = { showNodeQr = false },
-            title = { Text("Your servers") },
+            title = { Text(stringResource(R.string.profile_node_qr_title)) },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                     if (qr != null) {
                         Image(
                             bitmap = qr,
-                            contentDescription = "QR code with your server addresses",
+                            contentDescription = stringResource(R.string.profile_node_qr_description),
                             filterQuality = FilterQuality.None,
                             modifier = Modifier.size(240.dp),
                         )
                     } else {
-                        Text("Too many servers to fit in a QR code - use Share instead.")
+                        Text(stringResource(R.string.profile_node_qr_too_many))
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Scan with the camera of the other phone; it opens FRAD and asks before adding them.",
+                        stringResource(R.string.profile_node_qr_hint),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
             },
-            confirmButton = { TextButton(onClick = { showNodeQr = false }) { Text("Close") } },
+            confirmButton = { TextButton(onClick = { showNodeQr = false }) { Text(stringResource(R.string.profile_close)) } },
         )
     }
 
     if (confirmWipe) {
         AlertDialog(
             onDismissRequest = { confirmWipe = false },
-            title = { Text("Delete everything?") },
-            text = { Text("This can't be undone. FRAD will close and start from scratch next time, with a new identity.") },
+            title = { Text(stringResource(R.string.profile_wipe_confirm_title)) },
+            text = { Text(stringResource(R.string.profile_wipe_confirm_body)) },
             confirmButton = {
                 TextButton(onClick = { confirmWipe = false; viewModel.wipeEverything() }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.profile_delete), color = MaterialTheme.colorScheme.error)
                 }
             },
-            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text(stringResource(R.string.profile_cancel)) } },
         )
     }
 }
