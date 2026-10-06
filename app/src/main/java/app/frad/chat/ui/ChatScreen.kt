@@ -289,9 +289,9 @@ internal fun ChatContent(
                     Spacer(Modifier.height(6.dp))
                     // Shared interests first and starred.
                     Text(
-                        remoteInterests.sortedBy { it !in myInterests }.joinToString("  ·  ") {
-                            if (it in myInterests) "★ ${it.label}" else it.label
-                        },
+                        remoteInterests.sortedBy { it !in myInterests }
+                            .map { if (it in myInterests) "★ " + stringResource(it.labelRes) else stringResource(it.labelRes) }
+                            .joinToString("  ·  "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -337,7 +337,8 @@ internal fun ChatContent(
             val openers = remember(remoteInterests, myInterests) { Interest.icebreakers(remoteInterests intersect myInterests) }
             Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.Bottom) {
                 Text(stringResource(R.string.chat_openers_title), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                openers.forEach { opener ->
+                openers.forEach { openerRes ->
+                    val opener = stringResource(openerRes)
                     AssistChip(onClick = { draft = opener }, label = { Text(opener) })
                 }
             }
@@ -364,7 +365,7 @@ internal fun ChatContent(
                 title = { Text(stringResource(R.string.chat_share_title)) },
                 text = {
                     // "a and b and c", with the localized "and".
-                    val found = confirmSensitive.map { it.label }
+                    val found = confirmSensitive.map { stringResource(it.labelRes) }
                         .reduce { acc, label -> stringResource(R.string.chat_join_and, acc, label) }
                     Text(stringResource(R.string.chat_share_body, found, remotePseudonym))
                 },
@@ -721,7 +722,7 @@ private fun MessageBubble(message: ChatMessage, veiled: Boolean, onOpenFile: () 
                     }
                     if (warnings.isNotEmpty()) {
                         Text(
-                            stringResource(R.string.chat_careful, warnings.joinToString(", ") { it.label }),
+                            stringResource(R.string.chat_careful, warnings.map { stringResource(it.labelRes) }.joinToString(", ")),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                         )

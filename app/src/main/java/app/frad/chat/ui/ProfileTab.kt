@@ -230,7 +230,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                         selected = selected,
                         enabled = selected || interestsDraft.size < Interest.MAX_PER_PROFILE,
                         onClick = { interestsDraft = if (selected) interestsDraft - interest else interestsDraft + interest },
-                        label = { Text(interest.label) },
+                        label = { Text(stringResource(interest.labelRes)) },
                     )
                 }
             }

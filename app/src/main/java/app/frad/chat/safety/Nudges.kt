@@ -1,5 +1,8 @@
 package app.frad.chat.safety
 
+import androidx.annotation.StringRes
+import app.frad.chat.R
+
 /**
  * Gentle, on-device checks of chat text - nothing is blocked and nothing leaves the phone.
  *
@@ -10,17 +13,17 @@ package app.frad.chat.safety
  *    conversation to another app (where FRAD's protections don't follow) - is marked as such.
  */
 object Nudges {
-    enum class Outgoing(val label: String) {
-        PHONE_NUMBER("a phone number"),
-        EMAIL("an e-mail address"),
-        BANK_DETAILS("bank details"),
-        STREET_ADDRESS("an address"),
+    enum class Outgoing(@StringRes val labelRes: Int) {
+        PHONE_NUMBER(R.string.nudge_phone_number),
+        EMAIL(R.string.nudge_email),
+        BANK_DETAILS(R.string.nudge_bank_details),
+        STREET_ADDRESS(R.string.nudge_street_address),
     }
 
-    enum class Incoming(val label: String) {
-        LINK("contains a link"),
-        MONEY("asks about money"),
-        OTHER_APP("wants to move to another app"),
+    enum class Incoming(@StringRes val labelRes: Int) {
+        LINK(R.string.nudge_link),
+        MONEY(R.string.nudge_money),
+        OTHER_APP(R.string.nudge_other_app),
     }
 
     fun beforeSending(text: String): Set<Outgoing> = buildSet {

@@ -50,7 +50,7 @@ class ProfileEnvelopeTest {
     @Test
     fun `icebreakers start with what both people like`() {
         val openers = Interest.icebreakers(setOf(Interest.PETS, Interest.MUSIC))
-        assertEquals(listOf(Interest.MUSIC.icebreaker, Interest.PETS.icebreaker), openers.take(2))
+        assertEquals(listOf(Interest.MUSIC.icebreakerRes, Interest.PETS.icebreakerRes), openers.take(2))
         assertEquals(3, openers.size)
         assertEquals(3, Interest.icebreakers(emptySet()).size)
     }
