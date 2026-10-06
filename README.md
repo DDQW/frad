@@ -18,10 +18,16 @@ are different things. FRAD uses two discovery layers:
    approach the [Berty](https://github.com/berty/berty) messenger uses on
    mobile) so you can find people within a chosen radius over the internet.
    No single party operates or controls this — anyone can run a
-   bootstrap/relay node ([`p2p-go/cmd/bootstrap`](p2p-go/README.md)), and the
-   node list is user-configurable rather than hard-locked, which is also what
-   keeps this out of F-Droid's "Non-Free/Tethered Network Services"
-   anti-feature categories. M3's file transfer only covers the local layer
+   bootstrap/relay server ([`p2p-go/cmd/bootstrap`](p2p-go/README.md)), and
+   there's deliberately no single place to find one, so FRAD can't be switched
+   off by taking down any one server, list or website: servers federate and
+   swap verified server lists with each other, a crawler keeps a public list
+   ([`nodes/`](nodes/README.md), served through two independent CDNs) up to
+   date, every phone caches that list and swaps the public servers it knows
+   with every chat partner (over BLE too, so lists also travel between phones
+   that are never online), and anyone can add their own servers or pass them
+   on by `frad://node` link or QR code. That is also what keeps this out of
+   F-Droid's "Non-Free/Tethered Network Services" anti-feature categories. M3's file transfer only covers the local layer
    (Wi-Fi Direct, same short range as BLE) — M4 has its own file-transfer
    path over whatever connection carries a wide-range chat: a second libp2p
    stream to the peer, direct or relayed entirely at libp2p's own discretion,
@@ -34,36 +40,52 @@ found them.
 ## Privacy & safety design
 
 - No account, phone number, or email, ever. Identity is a random keypair
-  generated on-device.
+  generated on-device, kept sealed with a key that never leaves the Android
+  Keystore (`crypto/StorageCipher.kt`).
 - Exact GPS coordinates are never transmitted or stored remotely — the local
   layer never touches GPS at all, and the wide layer only ever shares a
   coarse geohash cell (city-sized or coarser; see `wideradius/Geohash.kt` and
   `wideradius/CoarseLocation.kt`, which reduces a location fix to a geohash
-  and discards the raw coordinate in the same function call).
-- "Available to chat" is a real, visible, one-tap-to-disable toggle - never a
+  and discards the raw coordinate in the same function call). Photos and
+  videos you send are re-encoded/remuxed without their EXIF/MP4 metadata
+  (GPS position, device, time) and renamed first (`media/MediaSanitizer.kt`).
+- Being visible is a real, visible, one-tap-to-disable toggle - never a
   *silent* background broadcast. It defaults to on (`Profile.alwaysVisible`),
   since an app whose whole point is meeting nearby people isn't much use if
   both sides have to happen to have it open at the same moment; running in
   the background is a real Android foreground service with a persistent,
-  honest notification ("FRAD is looking for friends") the whole time it's
-  active, and turning it off in Profile settings is one switch away.
+  honest notification the whole time it's active, with a "Turn off" button.
+  It can be limited to 30 min / 1 h / 3 h, and in the background FRAD only
+  advertises (others can still find you) instead of also scanning.
 - The rotating id you're discovered by is *not* your long-term identity key —
   a peer only learns who they actually matched with once an encrypted session
   is already established with them specifically, so passively scanning for
-  nearby devices can't be used to build a tracking profile.
-- Profile fields (pseudonym, gender, age, bio, photo - all optional except
-  pseudonym/gender) are shared automatically with whoever you match with,
-  the same way the pseudonym alone used to be - see `profile/ProfileEnvelope.kt`.
-  Nothing here is sent anywhere *before* that encrypted session exists,
-  and none of it is persisted about a peer unless you explicitly save them
-  as a contact. The photo is deliberately a tiny, low-quality thumbnail
-  (`profile/ProfilePhoto.kt`) - not to save space, but because it travels
-  over the same small-fragment BLE control channel as the Noise handshake
-  itself, where a bigger payload would mean meaningfully less reliable
-  connections (see the BLE fixes in the commit history for why that channel
-  is handled this carefully).
+  nearby devices can't be used to build a tracking profile. Encrypted frames
+  are padded to 64-byte blocks so their length doesn't give away what's in
+  them. The Noise implementation is checked against the published Cacophony
+  test vector.
+- Adults and minors are never matched (minimum age 16); each side announces
+  only "adult or not" right after the handshake, before any profile is sent.
+- Profile fields (pseudonym, gender, age, bio, interests, photo) are shared
+  with whoever you match with - the photo optionally only once both agree to
+  swap photos. Nothing is sent anywhere *before* the encrypted session
+  exists, and nothing is kept about a peer unless you save them as a contact.
+- Nobody can send you a file you haven't accepted (contacts are accepted
+  automatically); received files are shown as what their bytes are, not what
+  the sender claims, and pictures from non-contacts stay pixelated until
+  tapped.
+- On-device nudges: sending a phone number, e-mail, bank details or an
+  address to a non-contact asks first; incoming links, money requests and
+  "let's move to another app" are marked.
+- Chats are only kept with saved contacts - encrypted on the phone, optionally
+  deleted after a day, a week or a month. No cloud backup, no device-to-device
+  transfer of app data. Optional app lock (biometrics/screen lock, also hides
+  FRAD from screenshots and the recent-apps view) and a "delete everything"
+  button.
 - On-device block list and report flow (there's no central authority to
-  report *to*, so "report" = immediately block + keep a local note of why).
+  report *to*, so "report" = immediately block + keep the chat as evidence,
+  encrypted on the phone, viewable and exportable by you). Blocking, saving and
+  reporting also work after the other person left.
 
 See the full milestone/architecture rationale in the original design doc if
 you have it, or ask in an issue — the summary above is the durable version.
@@ -94,10 +116,11 @@ you have it, or ask in an issue — the summary above is the durable version.
   Noise session — never the chat's own message key, so a concurrent text
   message and file transfer can't collide on one nonce counter, and a fresh
   key per file and direction, so two transfers in one chat can't either.
-  Received
-  files are auto-accepted (same trust model as text messages) and shown
-  inline if they're an image, or as a name/size chip with an "Open" button
-  otherwise. Below API 29, the attach button doesn't appear — BLE text chat
+  Nothing is
+  transferred until the receiver accepts the request (name, type, size);
+  received files are shown inline if they're an image, or as a name/size chip
+  with an "Open" button otherwise, with real progress and a Cancel button
+  while they travel. Below API 29, the attach button doesn't appear — BLE text chat
   is unaffected. Like chat history, a file is only kept on disk once its
   peer is a saved contact. **Not yet verified**: the actual Wi-Fi Direct
   radio path needs two physical Android 10+ phones, the same real-hardware
@@ -124,6 +147,15 @@ you have it, or ask in an issue — the summary above is the durable version.
   (Go tests, not device tests): DHT rendezvous and a stream round trip work
   between in-process libp2p hosts, including over a circuit-relay v2 hop
   when that's the only path (see `p2p-go/node`'s test suite).
+- **Servers (bootstrap/relay) and the server network**: servers federate
+  (`-peer`), gossip verified server lists over `/frad/nodes/1.0.0` and keep
+  them on disk; a scheduled crawler (`p2p-go/cmd/nodecrawl`,
+  `.github/workflows/nodes-crawl.yml`) maintains [`nodes/nodes.txt`](nodes/README.md),
+  listing a server once it has passed three consecutive checks. Phones combine
+  the servers set by the user (tried first), that list (cached; fetched from
+  raw.githubusercontent and jsDelivr) and servers learned from servers and
+  other phones (`wideradius/NodeDirectory.kt`) - see
+  [`p2p-go/README.md`](p2p-go/README.md#node-directory-and-federation).
 - **M5 — abuse hardening**: in progress. So far: blocking is now resilient to identity resets —
   right after the Noise handshake, both sides also exchange a hashed, per-device fingerprint
   (`safety/DeviceFingerprint.kt`, derived from `Settings.Secure.ANDROID_ID`) and `BlockList`
@@ -149,11 +181,14 @@ you have it, or ask in an issue — the summary above is the durable version.
   Gradle/Kotlin/AndroidX/Bouncy Castle dependency
   version here is already pinned exactly (no `+`/dynamic ranges), and `p2p-go/go.mod` +
   `go.sum` pin the Go side the same way, both of which reproducible builds need. The
-  `metadata/en-US/` fastlane-format description F-Droid's listing uses already exists. Not yet
-  done: actually generating and safely storing a maintainer release key, submitting a build
-  recipe/metadata PR to the separate [fdroiddata](https://gitlab.com/fdroid/fdroiddata) repo,
-  and getting a real F-Droid reproducible-build pass (their `gomobile`/NDK toolchain pin for
-  `p2p-go/` hasn't been checked against what F-Droid's build server provides).
+  `metadata/en-US/` fastlane-format description F-Droid's listing uses already exists, the
+  build recipe to submit is drafted in [`fdroid/app.frad.chat.yml`](fdroid/app.frad.chat.yml),
+  and the Go side binds reproducibly (Go version from `go.mod`, gomobile/gobind pinned as
+  `go.mod` tool dependencies, `-trimpath`, stripped symbols); release builds run R8. CI also
+  builds the real go-libp2p variant. Not yet done: generating and safely storing a maintainer
+  release key, submitting the recipe to the separate
+  [fdroiddata](https://gitlab.com/fdroid/fdroiddata) repo, and a real F-Droid
+  reproducible-build pass.
 
 **Versioning:** stay under `1.0.0` until M2–M6 above are done — a `1.0` tag
 implies feature-complete, which this isn't yet.
@@ -216,9 +251,12 @@ go-libp2p binding whenever that binding hasn't been built (see
 with wide-range chat unavailable. To build the real binding:
 
 ```bash
-go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init  # once, needs Go 1.22+
-./gradlew gomobileBind   # needs the Android NDK too (ANDROID_HOME/ANDROID_NDK_HOME set)
+./gradlew gomobileBind   # needs Go and the Android NDK (ANDROID_NDK_HOME, or an NDK under ANDROID_HOME)
 ```
+
+(gomobile/gobind are the versions pinned in `p2p-go/go.mod`, installed into
+`p2p-go/build/bin` by the build itself; with `GOTOOLCHAIN=auto` any recent Go
+fetches the exact Go version `go.mod` names.)
 
 then rebuild normally. See [`p2p-go/README.md`](p2p-go/README.md) for the Go
 side, including running a bootstrap/relay node (required for wide-range
@@ -228,7 +266,8 @@ Install the APK on two physical Android phones (API 26+) to test the actual
 BLE discovery/chat flow — grant the Bluetooth permission prompt on both,
 toggle "Become visible nearby" on both, then "Chat with someone nearby" on
 one. Testing the wide-range flow additionally needs the real `.aar` built
-in and a reachable bootstrap node configured in Profile on both phones.
+in and a reachable server - one on the public list, or your own set in
+Profile on both phones.
 
 ## Project layout
 
@@ -247,8 +286,9 @@ in and a reachable bootstrap node configured in Profile on both phones.
   transfer id the sender puts in its file offer are all mixed in (offers
   without one, i.e. from builds before 0.3.23, are rejected);
   `ChunkedTransfer` frames those encrypted chunks over a plain suspend
-  read/write callback (used by the wide-range layer; `WifiDirectTransferManager`
-  keeps its own copy of this logic over a `java.io` socket).
+  read/write callback, used by both Wi-Fi Direct and wide-range, and reports
+  progress. `SealedBox`/`StorageCipher` seal what FRAD stores (identity,
+  chat history, reports) with a Keystore key.
 - `ble/` — BLE presence advertising/scanning (`BlePeripheralServer`,
   `BleCentralClient`), message fragmentation over the GATT MTU (`Framing`,
   also reused by the wide-range layer's framing, just never split into more
@@ -268,7 +308,13 @@ in and a reachable bootstrap node configured in Profile on both phones.
   compiles to a stub instead whenever that binding hasn't been built (see
   "Building" above). `WideRangeChatController` is the wide-range analogue of
   `BleChatController`. `Geohash` (+ `CoarseLocation`) derives the coarse DHT
-  rendezvous topic from the user's area.
+  rendezvous topic from the user's area. `NodeDirectory` decides which servers
+  to use (user's, official list, learned) and `NodeLinks` reads/writes
+  `frad://node` links.
+- `qr/` — QR codes for `frad://node` server links (encoding only, zxing core).
+- `media/` — `MediaSanitizer` (metadata stripping for outgoing photos/videos),
+  `FileTypeCheck` (what a received file's bytes actually are), voice recording
+  and camera capture files.
 - `pairing/` — `RandomMatcher`, the on-device "pick someone nearby" logic,
   plus `NearbyPeer`/`SignalStrength`, the discovery-result type shared by
   both BLE and wide-range (BLE has an RSSI; wide-range doesn't).
@@ -283,7 +329,9 @@ in and a reachable bootstrap node configured in Profile on both phones.
 - `data/` — `MediaFileStore`, on-device storage for files sent/received over
   Wi-Fi Direct or wide-range, one subdirectory per peer; exposed to other
   apps only via a `FileProvider` when the user explicitly opens a received file.
-- `safety/` — block list, report flow, request cooldown/rate-limiting, and (M5)
+- `safety/` — block list, report flow with encrypted evidence (`ReportFlow.kt`),
+  on-device nudges (`Nudges.kt`), request cooldown/rate-limiting (also keyed on
+  identity), and (M5)
   `DeviceFingerprint`, a hashed `ANDROID_ID`-derived id exchanged alongside the peer id so a
   block survives the other side resetting their identity keypair; transport-agnostic, used
   identically by both controllers.

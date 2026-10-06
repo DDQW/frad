@@ -47,6 +47,9 @@
     <!-- Wide-range discovery/chat/file-transfer (M4) - the go-libp2p layer. M1-M3 needed no
          internet access at all; this is the first FRAD feature that does. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wide-range: Android 11+ hides the network interfaces from Go, so the app reads its own
+         addresses from ConnectivityManager and hands them to the libp2p node. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- LocalBleService: keeps local BLE discovery/chat running in the background when
          Profile.alwaysVisible is on (default), via a real foreground service with a persistent
