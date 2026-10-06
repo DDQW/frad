@@ -81,6 +81,12 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_PHOTO_ON_REQUEST, false)
         set(value) { prefs.edit().putBoolean(KEY_PHOTO_ON_REQUEST, value).apply() }
 
+    /** Keep (redacted) crash reports on the phone for the user to share - see
+     *  [app.frad.chat.diagnostics.CrashReports]. Off unless the user turns it on. */
+    var crashReports: Boolean
+        get() = prefs.getBoolean(KEY_CRASH_REPORTS, false)
+        set(value) { prefs.edit().putBoolean(KEY_CRASH_REPORTS, value).apply() }
+
     /** Shown to matches (see [Interest]); at most [Interest.MAX_PER_PROFILE]. */
     var interests: Set<Interest>
         get() = prefs.getString(KEY_INTERESTS, null)?.split(',')?.mapNotNull(Interest::fromKey)?.toSet() ?: emptySet()
@@ -167,6 +173,7 @@ class Profile(context: Context) {
         private const val KEY_INTERESTS = "interests"
         private const val KEY_PHOTO_ON_REQUEST = "photo_on_request"
         private const val KEY_USE_PUBLIC_NODES = "use_public_nodes"
+        private const val KEY_CRASH_REPORTS = "crash_reports"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
         private const val KEY_SHARE_AGE = "share_age"
