@@ -109,6 +109,14 @@
     <string name="ctl_wide_not_built">Großer Umkreis (Internet) ist in diese App nicht eingebaut</string>
     <string name="ctl_wide_set_area_first">Leg deine Gegend im Profil fest, bevor du „Großer Umkreis“ nutzt</string>
     <string name="ctl_wide_start_failed">Großer Umkreis (Internet) konnte nicht gestartet werden: %1$s</string>
+    <plurals name="extra_crash_reports_count">
+        <item quantity="one">%1$d Bericht gespeichert</item>
+        <item quantity="other">%1$d Berichte gespeichert</item>
+    </plurals>
+    <string name="extra_crash_reports_delete">Berichte löschen</string>
+    <string name="extra_crash_reports_explainer">Wenn FRAD abstürzt, einen Bericht auf diesem Handy behalten - Adressen und IDs werden unkenntlich gemacht, und nichts wird irgendwohin geschickt, außer du teilst ihn selbst.</string>
+    <string name="extra_crash_reports_share">Letzten Bericht teilen</string>
+    <string name="extra_crash_reports_title">Absturzberichte</string>
     <string name="icebreaker_art">Machst du selbst Kunst oder schaust du sie dir eher an?</string>
     <string name="icebreaker_boardgames">Lieblingsbrettspiel?</string>
     <string name="icebreaker_books">Was liest du gerade?</string>

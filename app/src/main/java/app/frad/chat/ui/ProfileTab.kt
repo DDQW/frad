@@ -57,6 +57,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import app.frad.chat.AppLock
+import androidx.compose.ui.res.pluralStringResource
+import app.frad.chat.diagnostics.CrashReports
 import app.frad.chat.R
 import app.frad.chat.qr.QrCode
 import app.frad.chat.profile.Gender
@@ -455,6 +457,8 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 }
             }
             Spacer(Modifier.height(16.dp))
+            CrashReportSettings(viewModel)
+            Spacer(Modifier.height(16.dp))
             Text(stringResource(R.string.profile_delete_all_title), fontWeight = FontWeight.SemiBold)
             Text(
                 stringResource(R.string.profile_delete_all_explainer),
@@ -513,5 +517,42 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             },
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text(stringResource(R.string.profile_cancel)) } },
         )
+    }
+}
+
+/** Opt-in crash reports (see [app.frad.chat.diagnostics.CrashReports]): the switch, and sharing or
+ *  deleting what's been kept. */
+@Composable
+private fun CrashReportSettings(viewModel: ChatViewModel) {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(viewModel.crashReports) }
+    var reports by remember { mutableStateOf(CrashReports.reports(context)) }
+    val chooserTitle = stringResource(R.string.extra_crash_reports_share)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(stringResource(R.string.extra_crash_reports_title), fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.extra_crash_reports_explainer),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = { enabled = it; viewModel.crashReports = it })
+    }
+    if (reports.isNotEmpty()) {
+        Text(
+            pluralStringResource(R.plurals.extra_crash_reports_count, reports.size, reports.size),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val text = runCatching { reports.first().readText() }.getOrNull() ?: return@OutlinedButton
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+                context.startActivity(Intent.createChooser(send, chooserTitle))
+            }) { Text(chooserTitle) }
+            TextButton(onClick = { CrashReports.deleteAll(context); reports = emptyList() }) {
+                Text(stringResource(R.string.extra_crash_reports_delete))
+            }
+        }
     }
 }

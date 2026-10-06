@@ -110,6 +110,14 @@
     <string name="ctl_wide_not_built">Wide-range networking isn\'t built into this app</string>
     <string name="ctl_wide_set_area_first">Set your area in Profile before going wide-range</string>
     <string name="ctl_wide_start_failed">Couldn\'t start wide-range networking: %1$s</string>
+    <plurals name="extra_crash_reports_count">
+        <item quantity="one">%1$d report saved</item>
+        <item quantity="other">%1$d reports saved</item>
+    </plurals>
+    <string name="extra_crash_reports_delete">Delete reports</string>
+    <string name="extra_crash_reports_explainer">If FRAD crashes, keep a report on this phone - addresses and ids are blanked out, and nothing is sent anywhere unless you share it yourself.</string>
+    <string name="extra_crash_reports_share">Share last report</string>
+    <string name="extra_crash_reports_title">Crash reports</string>
     <string name="icebreaker_art">Do you make art yourself, or mostly look at it?</string>
     <string name="icebreaker_boardgames">Favourite board game?</string>
     <string name="icebreaker_books">What are you reading right now?</string>

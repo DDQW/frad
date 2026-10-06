@@ -264,6 +264,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return getApplication<Application>().getString(missing)
     }
 
+    var crashReports: Boolean
+        get() = profile.crashReports
+        set(value) { profile.crashReports = value }
+
     var usePublicNodes: Boolean
         get() = profile.usePublicNodes
         set(value) { profile.usePublicNodes = value }
