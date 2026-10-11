@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestStoreSaveLoadAndExpiry(t *testing.T) {
 func TestStoreCandidatesBecomeKnownOnlyWhenAlive(t *testing.T) {
 	self, a, b := randomID(t), randomID(t), randomID(t)
 	st := newNodeStore(filepath.Join(t.TempDir(), "n.txt"), self, time.Hour, false)
-	st.addCandidates([]peer.AddrInfo{
+	st.addCandidates(fromPushed, "test", []peer.AddrInfo{
 		{ID: self, Addrs: addrs("/ip4/203.0.113.1/tcp/4001")},
 		{ID: a, Addrs: addrs("/ip4/93.184.216.1/tcp/4001")},
 		{ID: b, Addrs: addrs("/ip4/198.51.100.1/tcp/4001")},
@@ -109,7 +110,7 @@ func TestStorePickMixesKnownAndCandidates(t *testing.T) {
 		id := randomID(t)
 		knownIDs = append(knownIDs, id)
 		st.markAlive(id, addrs(fmt.Sprintf("/ip4/93.184.%d.1/tcp/4001", i)), time.Now())
-		st.addCandidates([]peer.AddrInfo{{ID: randomID(t), Addrs: addrs(fmt.Sprintf("/ip4/198.51.%d.1/tcp/4001", i))}})
+		st.addCandidates(fromCurated, "test", []peer.AddrInfo{{ID: randomID(t), Addrs: addrs(fmt.Sprintf("/ip4/198.51.%d.1/tcp/4001", i))}})
 	}
 	picked := st.pick(8)
 	known := 0
@@ -125,7 +126,7 @@ func TestStorePickMixesKnownAndCandidates(t *testing.T) {
 	// A candidate claiming a known id (a server that moved) is tried under
 	// that known entry, at both addresses.
 	moved := addrs("/ip4/203.0.113.77/tcp/4001")
-	st.addCandidates([]peer.AddrInfo{{ID: knownIDs[0], Addrs: moved}})
+	st.addCandidates(fromPushed, "test", []peer.AddrInfo{{ID: knownIDs[0], Addrs: moved}})
 	for _, p := range st.pick(100) {
 		if p.ID == knownIDs[0] && (len(p.Addrs) != 2 || !p.Addrs[0].Equal(moved[0])) {
 			t.Fatalf("moved node picked with %v", p.Addrs)
@@ -146,5 +147,93 @@ func TestStoreEvictsLeastRecentlySeen(t *testing.T) {
 	}
 	if len(st.known) != maxKnownNodes || st.isKnown(oldest) {
 		t.Fatalf("%d known (oldest kept: %v), want %d without the oldest", len(st.known), st.isKnown(oldest), maxKnownNodes)
+	}
+}
+
+// TestStoreCapsKnownNodesPerNetwork: many verified peer ids on one network
+// (one machine, one rented block) count as at most two known servers, and
+// established ones keep their places.
+func TestStoreCapsKnownNodesPerNetwork(t *testing.T) {
+	st := newNodeStore(filepath.Join(t.TempDir(), "n.txt"), randomID(t), 7*24*time.Hour, false)
+	now := time.Now()
+	first, second, third := randomID(t), randomID(t), randomID(t)
+	st.markAlive(first, addrs("/ip4/93.184.216.1/tcp/4001"), now.Add(-2*time.Hour))
+	st.markAlive(second, addrs("/ip4/93.184.216.2/tcp/4001"), now.Add(-time.Hour))
+	if got := st.markAlive(third, addrs("/ip4/93.184.216.3/tcp/4001"), now); got != nil || st.isKnown(third) {
+		t.Fatal("a third server on one /24 was admitted")
+	}
+	// Its address on another network still counts, alone.
+	got := st.markAlive(third, addrs("/ip4/93.184.216.3/tcp/4001", "/ip6/2a01:4f8:1::3/tcp/4001"), now)
+	if len(got) != 1 || !got[0].Equal(ma.StringCast("/ip6/2a01:4f8:1::3/tcp/4001")) {
+		t.Fatalf("admitted %v, want only the IPv6 address", got)
+	}
+	// A known server is re-verified against the others, not against itself.
+	if got := st.markAlive(first, addrs("/ip4/93.184.216.1/tcp/4001"), now); len(got) != 1 {
+		t.Fatal("re-verifying an established server failed")
+	}
+
+	// Loading enforces the cap too, keeping the most recently seen.
+	path := filepath.Join(t.TempDir(), "nodes.txt")
+	var file strings.Builder
+	ids := []peer.ID{randomID(t), randomID(t), randomID(t)}
+	for i, id := range ids {
+		fmt.Fprintf(&file, "/ip4/198.51.100.%d/tcp/4001/p2p/%s %s\n", i+1, id, now.Add(-time.Duration(i)*time.Hour).UTC().Format(time.RFC3339))
+	}
+	if err := os.WriteFile(path, []byte(file.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded := newNodeStore(path, randomID(t), 7*24*time.Hour, false)
+	if err := loaded.load(now); err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.isKnown(ids[0]) || !loaded.isKnown(ids[1]) || loaded.isKnown(ids[2]) {
+		t.Fatalf("loaded %v, want the two most recently seen", loaded.alive())
+	}
+}
+
+// TestStoreCandidateSourcesDontCrowdEachOtherOut: a peer pushing junk as fast
+// as it likes neither displaces the official list's or verified servers'
+// candidates nor holds more than its share of the pushed queue, and every
+// source gets checked each round.
+func TestStoreCandidateSourcesDontCrowdEachOtherOut(t *testing.T) {
+	st := newNodeStore(filepath.Join(t.TempDir(), "n.txt"), randomID(t), time.Hour, false)
+	official := []peer.AddrInfo{{ID: randomID(t), Addrs: addrs("/ip4/198.51.100.1/tcp/4001")}}
+	fromServer := []peer.AddrInfo{{ID: randomID(t), Addrs: addrs("/ip4/198.51.101.1/tcp/4001")}}
+	st.addCandidates(fromCurated, "official", official)
+	st.addCandidates(fromServers, "203.0.113.0/24", fromServer)
+
+	junk := func() []peer.AddrInfo {
+		var list []peer.AddrInfo
+		for i := 0; i < 64; i++ {
+			list = append(list, peer.AddrInfo{ID: randomID(t), Addrs: addrs(fmt.Sprintf("/ip4/1.0.%d.1/tcp/4001", i))})
+		}
+		return list
+	}
+	var lastPush []peer.AddrInfo
+	for i := 0; i < 20; i++ {
+		lastPush = junk()
+		st.addCandidates(fromPushed, "192.0.2.0/24", lastPush)
+	}
+	if !st.isCandidate(official[0].ID) || !st.isCandidate(fromServer[0].ID) {
+		t.Fatal("pushed junk displaced curated or server candidates")
+	}
+	if n := len(st.candidates[fromPushed].infos); n != maxCandidatesPerVia {
+		t.Fatalf("one network holds %d pushed candidates, want %d", n, maxCandidatesPerVia)
+	}
+	if !st.isCandidate(lastPush[0].ID) || st.isCandidate(lastPush[maxCandidatesPerVia].ID) {
+		t.Fatal("a network's latest push must replace its earlier ones, up to its share")
+	}
+	// Another network's push still gets in.
+	phone := []peer.AddrInfo{{ID: randomID(t), Addrs: addrs("/ip4/198.51.102.1/tcp/4001")}}
+	st.addCandidates(fromPushed, "203.0.114.0/24", phone)
+	if !st.isCandidate(phone[0].ID) {
+		t.Fatal("a second network's push was refused")
+	}
+
+	picked := peer.AddrInfosToIDs(st.pick(3))
+	for _, want := range []peer.ID{official[0].ID, fromServer[0].ID} {
+		if !slices.Contains(picked, want) {
+			t.Fatalf("pick %v skipped a source's only candidate %s", picked, want)
+		}
 	}
 }

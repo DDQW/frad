@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -21,13 +23,18 @@ import (
 
 const (
 	// maxKnownNodes bounds the persisted list. Each entry is a verified server,
-	// which an attacker has to actually run, so this only needs to be generous
+	// which an attacker has to actually run - and at most 2 of them per
+	// network count (see admissibleLocked) - so this only needs to be generous
 	// enough for a large healthy network.
 	maxKnownNodes = 512
-	// maxCandidateEntries bounds unverified addresses waiting for a check -
-	// these cost an attacker nothing, so the cap (and the diversity limits
-	// p2pnode.MergeNodeLists applies) is what keeps them from piling up.
-	maxCandidateEntries = 256
+	// maxCandidatesPerSource bounds the unverified addresses waiting for a
+	// check, per candidateSource. These cost an attacker nothing, so the caps
+	// (and the diversity limits p2pnode.MergeNodeLists applies) are what keep
+	// them from piling up.
+	maxCandidatesPerSource = 128
+	// maxCandidatesPerVia bounds how many of a source's queued candidates one
+	// network may have contributed (see addCandidates).
+	maxCandidatesPerVia = 16
 	// lastSeenPersistGranularity is how stale the persisted last-seen time of
 	// an otherwise unchanged node may get before a sighting rewrites the file.
 	lastSeenPersistGranularity = time.Hour
@@ -52,8 +59,34 @@ type nodeStore struct {
 
 	mu         sync.Mutex
 	known      map[peer.ID]knownNode
-	candidates []peer.AddrInfo
+	candidates [numCandidateSources]candidateQueue
 	dirty      bool
+}
+
+// candidateSource is where a candidate came from. Each source has its own
+// bounded queue and pick draws from all of them in turn, so flooding one -
+// anyone at all can push lists - can't crowd out the others: whatever
+// happens to the pushed queue, the official list and verified servers' lists
+// still get checked.
+type candidateSource int
+
+const (
+	// fromCurated: -peer and the official list, chosen by people.
+	fromCurated candidateSource = iota
+	// fromServers: lists from verified servers, and servers this node has
+	// dialed (in practice, through the DHT).
+	fromServers
+	// fromPushed: lists pushed by anyone else over the node-list protocol, and
+	// servers that connected to this node.
+	fromPushed
+	numCandidateSources
+)
+
+// candidateQueue is one source's candidates, newest first, with the network
+// each entry came from (see addCandidates).
+type candidateQueue struct {
+	infos []peer.AddrInfo
+	via   map[peer.ID]string
 }
 
 type knownNode struct {
@@ -62,14 +95,20 @@ type knownNode struct {
 }
 
 func newNodeStore(path string, self peer.ID, ttl time.Duration, allowPrivate bool) *nodeStore {
-	return &nodeStore{
+	st := &nodeStore{
 		path: path, self: self, ttl: ttl, allowPrivate: allowPrivate,
 		known: make(map[peer.ID]knownNode),
 	}
+	for i := range st.candidates {
+		st.candidates[i].via = make(map[peer.ID]string)
+	}
+	return st
 }
 
 // load reads the persisted known nodes, skipping comments, malformed lines and
-// entries older than ttl. A missing file just means a fresh node.
+// entries older than ttl. A missing file just means a fresh node. Entries are
+// admitted like fresh sightings, most recent first, so the diversity cap holds
+// whatever the file says.
 func (st *nodeStore) load(now time.Time) error {
 	data, err := os.ReadFile(st.path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -78,8 +117,7 @@ func (st *nodeStore) load(now time.Time) error {
 	if err != nil {
 		return err
 	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
+	loaded := make(map[peer.ID]knownNode)
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 || strings.HasPrefix(fields[0], "#") {
@@ -90,19 +128,28 @@ func (st *nodeStore) load(now time.Time) error {
 			continue
 		}
 		for _, info := range p2pnode.ParseNodeList(fields[0], st.allowPrivate) {
-			st.mergeKnownLocked(info, lastSeen)
+			mergeKnown(loaded, info, lastSeen)
 		}
 	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, info := range byLastSeen(loaded) {
+		if info.ID == st.self {
+			continue
+		}
+		if addrs := st.admissibleLocked(info.ID, info.Addrs); len(addrs) > 0 {
+			st.known[info.ID] = knownNode{addrs: addrs, lastSeen: loaded[info.ID].lastSeen}
+		}
+	}
+	st.evictOverflowLocked()
 	return nil
 }
 
-// mergeKnownLocked adds info's addresses to its known entry, as loaded from
-// disk where one peer spans several lines.
-func (st *nodeStore) mergeKnownLocked(info peer.AddrInfo, lastSeen time.Time) {
-	if info.ID == st.self {
-		return
-	}
-	k := st.known[info.ID]
+// mergeKnown adds info's addresses to its entry in m, as loaded from disk
+// where one peer spans several lines.
+func mergeKnown(m map[peer.ID]knownNode, info peer.AddrInfo, lastSeen time.Time) {
+	k := m[info.ID]
 	for _, addr := range info.Addrs {
 		if !ma.Contains(k.addrs, addr) {
 			k.addrs = append(k.addrs, addr)
@@ -111,7 +158,19 @@ func (st *nodeStore) mergeKnownLocked(info peer.AddrInfo, lastSeen time.Time) {
 	if lastSeen.After(k.lastSeen) {
 		k.lastSeen = lastSeen
 	}
-	st.known[info.ID] = k
+	m[info.ID] = k
+}
+
+// byLastSeen lists m most recently seen first, peer id breaking ties.
+func byLastSeen(m map[peer.ID]knownNode) []peer.AddrInfo {
+	list := make([]peer.AddrInfo, 0, len(m))
+	for id, k := range m {
+		list = append(list, peer.AddrInfo{ID: id, Addrs: slices.Clone(k.addrs)})
+	}
+	slices.SortFunc(list, func(a, b peer.AddrInfo) int {
+		return cmp.Or(m[b.ID].lastSeen.Compare(m[a.ID].lastSeen), cmp.Compare(a.ID, b.ID))
+	})
+	return list
 }
 
 // save persists the known nodes if anything changed since the last save.
@@ -173,23 +232,53 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// markAlive records id as a verified server reachable at addrs, as of now.
-func (st *nodeStore) markAlive(id peer.ID, addrs []ma.Multiaddr, now time.Time) {
+// markAlive records id as a verified server reachable at addrs (as proven by
+// p2pnode.VerifyNodeAddrs), as of now. It returns the addresses it accepted:
+// none if id's networks already hold their share of other known servers.
+func (st *nodeStore) markAlive(id peer.ID, addrs []ma.Multiaddr, now time.Time) []ma.Multiaddr {
 	if id == st.self || len(addrs) == 0 {
-		return
+		return nil
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	addrs = st.admissibleLocked(id, addrs)
+	if len(addrs) == 0 {
+		return nil
+	}
 	prev, existed := st.known[id]
-	st.known[id] = knownNode{addrs: slices.Clone(addrs), lastSeen: now}
+	st.known[id] = knownNode{addrs: addrs, lastSeen: now}
 	st.removeCandidateLocked(id)
 	st.evictOverflowLocked()
-	// Federation peers are re-sighted every minute; a week-long expiry doesn't
-	// need the file rewritten that often.
+	// Federation peers are re-sighted often; a week-long expiry doesn't need
+	// the file rewritten that often.
 	if !existed || !slices.EqualFunc(prev.addrs, addrs, ma.Multiaddr.Equal) ||
 		now.Sub(prev.lastSeen) >= lastSeenPersistGranularity {
 		st.dirty = true
 	}
+	return addrs
+}
+
+// admissibleLocked returns the addresses of id that fit the per-network
+// diversity cap (p2pnode.MergeNodeLists) next to every other known node -
+// which keep their places: once a network holds its share of servers, more
+// peer ids there, however fresh their sightings, can't push those out, nor
+// fill this store and evict servers elsewhere.
+func (st *nodeStore) admissibleLocked(id peer.ID, addrs []ma.Multiaddr) []ma.Multiaddr {
+	others := slices.DeleteFunc(byLastSeen(st.known), func(k peer.AddrInfo) bool { return k.ID == id })
+	for _, m := range p2pnode.MergeNodeLists(math.MaxInt, others, []peer.AddrInfo{{ID: id, Addrs: addrs}}) {
+		if m.ID == id {
+			return m.Addrs
+		}
+	}
+	return nil
+}
+
+// seenSince reports whether id is a known node last seen at or after t.
+func (st *nodeStore) seenSince(id peer.ID, t time.Time) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	k, ok := st.known[id]
+	return ok && !k.lastSeen.Before(t)
 }
 
 // markFailed drops id from the candidates after a failed check. A known node
@@ -202,7 +291,14 @@ func (st *nodeStore) markFailed(id peer.ID) {
 }
 
 func (st *nodeStore) removeCandidateLocked(id peer.ID) {
-	st.candidates = slices.DeleteFunc(st.candidates, func(c peer.AddrInfo) bool { return c.ID == id })
+	for i := range st.candidates {
+		st.candidates[i].remove(id)
+	}
+}
+
+func (q *candidateQueue) remove(id peer.ID) {
+	q.infos = slices.DeleteFunc(q.infos, func(c peer.AddrInfo) bool { return c.ID == id })
+	delete(q.via, id)
 }
 
 // evictOverflowLocked forgets the least recently seen nodes beyond maxKnownNodes.
@@ -219,13 +315,31 @@ func (st *nodeStore) evictOverflowLocked() {
 	}
 }
 
-// addCandidates queues infos (already validated) for a liveness check.
-// Existing candidates keep their place: new ones only fill free space.
-func (st *nodeStore) addCandidates(infos []peer.AddrInfo) {
+// addCandidates queues infos (already validated) from src for a liveness
+// check. Newer entries go first, so a full queue sheds its oldest ones rather
+// than refusing new ones. via names the network the list came from (see
+// p2pnode.NetworkKey); outside fromCurated, each via may hold at most
+// maxCandidatesPerVia entries of a queue, and its newest list replaces what
+// it sent before - so one machine, however many peer ids it runs and however
+// often it pushes, keeps a fixed small share and can't flush the queue.
+func (st *nodeStore) addCandidates(src candidateSource, via string, infos []peer.AddrInfo) {
 	infos = slices.DeleteFunc(slices.Clone(infos), func(i peer.AddrInfo) bool { return i.ID == st.self })
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.candidates = p2pnode.MergeNodeLists(maxCandidateEntries, st.candidates, infos)
+	q := &st.candidates[src]
+	if src != fromCurated {
+		infos = infos[:min(len(infos), maxCandidatesPerVia)]
+		q.infos = slices.DeleteFunc(q.infos, func(c peer.AddrInfo) bool { return q.via[c.ID] == via })
+	}
+	for _, info := range infos {
+		q.via[info.ID] = via
+	}
+	q.infos = p2pnode.MergeNodeLists(maxCandidatesPerSource, infos, q.infos)
+	queued := make(map[peer.ID]bool, len(q.infos))
+	for _, info := range q.infos {
+		queued[info.ID] = true
+	}
+	maps.DeleteFunc(q.via, func(id peer.ID, _ string) bool { return !queued[id] })
 }
 
 // prune forgets known nodes not seen within ttl of now.
@@ -242,38 +356,63 @@ func (st *nodeStore) prune(now time.Time) {
 
 // pick chooses up to n nodes to check, at random: about half known nodes (to
 // refresh their sightings and hear their lists) and half candidates, topping
-// up from either side when the other runs short. A candidate claiming a known
+// up from either side when the other runs short. Candidates are drawn from
+// each source in turn (see candidateSource). A candidate claiming a known
 // peer id - a server that moved - is merged into that known entry, so its new
 // address gets tried too.
 func (st *nodeStore) pick(n int) []peer.AddrInfo {
 	st.mu.Lock()
 	known := st.knownListLocked()
-	var fresh []peer.AddrInfo
-	for _, c := range st.candidates {
-		if i := slices.IndexFunc(known, func(k peer.AddrInfo) bool { return k.ID == c.ID }); i >= 0 {
-			known[i].Addrs = append(slices.Clone(c.Addrs), known[i].Addrs...)
-			continue
+	var fresh [numCandidateSources][]peer.AddrInfo
+	numFresh := 0
+	for src, q := range st.candidates {
+		for _, c := range q.infos {
+			if i := slices.IndexFunc(known, func(k peer.AddrInfo) bool { return k.ID == c.ID }); i >= 0 {
+				known[i].Addrs = append(slices.Clone(c.Addrs), known[i].Addrs...)
+				continue
+			}
+			fresh[src] = append(fresh[src], c)
+			numFresh++
 		}
-		fresh = append(fresh, c)
 	}
 	st.mu.Unlock()
 
 	rand.Shuffle(len(known), func(i, j int) { known[i], known[j] = known[j], known[i] })
-	rand.Shuffle(len(fresh), func(i, j int) { fresh[i], fresh[j] = fresh[j], fresh[i] })
-	takeKnown := min(len(known), max(n/2, n-len(fresh)))
-	takeFresh := min(len(fresh), n-takeKnown)
-	return append(known[:takeKnown:takeKnown], fresh[:takeFresh]...)
+	for _, list := range fresh {
+		rand.Shuffle(len(list), func(i, j int) { list[i], list[j] = list[j], list[i] })
+	}
+	takeKnown := min(len(known), max(n/2, n-numFresh))
+	return append(known[:takeKnown:takeKnown], interleave(fresh[:], n-takeKnown)...)
+}
+
+// interleave takes up to n entries from lists in turn - one from each, then
+// the next from each - skipping peer ids already taken.
+func interleave(lists [][]peer.AddrInfo, n int) []peer.AddrInfo {
+	var out []peer.AddrInfo
+	taken := make(map[peer.ID]bool)
+	for progress := true; progress && len(out) < n; {
+		progress = false
+		for i := range lists {
+			for len(lists[i]) > 0 && len(out) < n {
+				c := lists[i][0]
+				lists[i] = lists[i][1:]
+				if !taken[c.ID] {
+					taken[c.ID] = true
+					out = append(out, c)
+					progress = true
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // alive lists the known nodes, most recently seen first.
 func (st *nodeStore) alive() []peer.AddrInfo {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	list := st.knownListLocked()
-	slices.SortFunc(list, func(a, b peer.AddrInfo) int {
-		return cmp.Or(st.known[b.ID].lastSeen.Compare(st.known[a.ID].lastSeen), cmp.Compare(a.ID, b.ID))
-	})
-	return list
+	return byLastSeen(st.known)
 }
 
 func (st *nodeStore) knownListLocked() []peer.AddrInfo {
@@ -294,5 +433,10 @@ func (st *nodeStore) isKnown(id peer.ID) bool {
 func (st *nodeStore) isCandidate(id peer.ID) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return slices.ContainsFunc(st.candidates, func(c peer.AddrInfo) bool { return c.ID == id })
+	for _, q := range st.candidates {
+		if slices.ContainsFunc(q.infos, func(c peer.AddrInfo) bool { return c.ID == id }) {
+			return true
+		}
+	}
+	return false
 }

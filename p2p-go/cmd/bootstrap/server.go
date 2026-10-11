@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -31,6 +32,18 @@ const (
 	// federationTag protects connections to -peer nodes from the connection
 	// manager's trimming, so federation doesn't silently erode under load.
 	federationTag = "frad-federation"
+	// federationRecheck is how long a -peer node's last verification stands.
+	// The reconnect loop runs every minute, but sightings are only persisted
+	// hourly (lastSeenPersistGranularity), so dialing back every one of its
+	// addresses each time would be wasted on both ends.
+	federationRecheck = lastSeenPersistGranularity
+)
+
+// Why recordIfServer didn't vouch for a peer.
+var (
+	errNotServer   = errors.New("doesn't run FRAD's DHT in server mode")
+	errNoAddrs     = errors.New("can't be reached at any listable address")
+	errNetworkFull = errors.New("its network already has its share of known servers")
 )
 
 type config struct {
@@ -120,7 +133,7 @@ func newServer(cfg config, priv crypto.PrivKey) (*server, error) {
 		// A damaged list is no reason to stay down; it refills from the network.
 		cfg.logf("ignoring unreadable nodes file %s: %v", cfg.nodesFile, err)
 	}
-	s.store.addCandidates(cfg.federation)
+	s.store.addCandidates(fromCurated, "-peer", cfg.federation)
 
 	s.dht, err = dht.New(h,
 		dht.ProtocolPrefix(protocol.ID(p2pnode.ProtocolPrefix)),
@@ -199,31 +212,35 @@ func (s *server) printReady() {
 func (s *server) reconnectFederation(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, p := range s.cfg.federation {
-		if p.ID == s.h.ID() {
-			continue
+		if p.ID != s.h.ID() {
+			wg.Go(func() { s.checkFederationPeer(ctx, p) })
 		}
-		wg.Go(func() {
-			if s.h.Network().Connectedness(p.ID) != network.Connected {
-				cctx, cancel := context.WithTimeout(ctx, nodeCheckTimeout)
-				defer cancel()
-				if err := s.h.Connect(cctx, p); err != nil {
-					s.cfg.logf("federation peer %s unreachable: %v", p.ID, err)
-					return
-				}
-			}
-			if !s.recordIfServer(ctx, p.ID) {
-				s.cfg.logf("federation peer %s doesn't look like a FRAD bootstrap node", p.ID)
-			}
-		})
 	}
 	wg.Wait()
 	s.persist()
 }
 
+func (s *server) checkFederationPeer(ctx context.Context, p peer.AddrInfo) {
+	ctx, cancel := context.WithTimeout(ctx, nodeCheckTimeout)
+	defer cancel()
+	if s.h.Network().Connectedness(p.ID) != network.Connected {
+		if err := s.h.Connect(ctx, p); err != nil {
+			s.cfg.logf("federation peer %s unreachable: %v", p.ID, err)
+			return
+		}
+	}
+	if s.store.seenSince(p.ID, time.Now().Add(-federationRecheck)) {
+		return
+	}
+	if _, err := s.recordIfServer(ctx, p.ID); err != nil {
+		s.cfg.logf("federation peer %s isn't listed: %v", p.ID, err)
+	}
+}
+
 // gossipOnce checks a random handful of known and candidate nodes, swapping
 // node lists with each one that turns out to be a FRAD server, then persists.
 func (s *server) gossipOnce(ctx context.Context) {
-	s.recordConnectedServers(ctx)
+	s.queueConnectedServers()
 	mine := s.sharedNodes()
 	var wg sync.WaitGroup
 	for _, target := range s.store.pick(gossipFanout) {
@@ -234,13 +251,18 @@ func (s *server) gossipOnce(ctx context.Context) {
 	s.persist()
 }
 
-// checkNode connects to info and, if identify shows a FRAD server, records it
-// as known (at the addresses it reports for itself) and takes what it shares as
-// new candidates. Lists from anything else aren't worth hearing.
+// checkNode connects to info and, if it is a FRAD server, records it as known
+// (at the addresses it has been proven reachable at) and takes what it shares
+// as new candidates. Lists from anything else aren't worth hearing.
 func (s *server) checkNode(ctx context.Context, info peer.AddrInfo, mine []peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(ctx, nodeCheckTimeout)
 	defer cancel()
-	if err := s.h.Connect(ctx, info); err != nil || !s.recordIfServer(ctx, info.ID) {
+	if err := s.h.Connect(ctx, info); err != nil {
+		s.store.markFailed(info.ID)
+		return
+	}
+	addrs, err := s.recordIfServer(ctx, info.ID)
+	if err != nil {
 		s.store.markFailed(info.ID)
 		return
 	}
@@ -249,31 +271,68 @@ func (s *server) checkNode(ctx context.Context, info peer.AddrInfo, mine []peer.
 		s.cfg.logf("node list from %s: %v", info.ID, err)
 		return
 	}
-	s.store.addCandidates(theirs)
+	s.store.addCandidates(fromServers, p2pnode.NetworkKey(addrs[0]), theirs)
 }
 
 // recordIfServer marks a connected peer as a known node if it is a FRAD
-// server with at least one address worth listing.
-func (s *server) recordIfServer(ctx context.Context, id peer.ID) bool {
+// server, at the addresses it has been proven reachable at
+// (p2pnode.VerifyNodeAddrs) and the diversity cap admits, and returns those.
+func (s *server) recordIfServer(ctx context.Context, id peer.ID) ([]ma.Multiaddr, error) {
+	// Connect returns at once for a peer already connected - e.g. through the
+	// DHT - possibly before identify has told us what it runs.
+	p2pnode.AwaitSelfReport(ctx, s.h, id)
 	if !p2pnode.IsFradServer(s.h, id) {
-		return false
+		return nil, errNotServer
 	}
-	addrs := p2pnode.AwaitVerifiedNodeAddrs(ctx, s.h, id, s.cfg.allowPrivate)
+	verified := p2pnode.VerifyNodeAddrs(ctx, s.h, id, s.cfg.allowPrivate)
+	if len(verified) == 0 {
+		return nil, errNoAddrs
+	}
+	addrs := s.store.markAlive(id, verified, time.Now())
 	if len(addrs) == 0 {
-		return false
+		return nil, errNetworkFull
 	}
-	s.store.markAlive(id, addrs, time.Now())
-	return true
+	return addrs, nil
 }
 
-// recordConnectedServers counts every live connection to a FRAD server as a
-// sighting. The DHT keeps connections to plenty of other servers - including
-// ones nobody has gossiped about yet - so this is a second, independent way
-// for servers to find each other, and keeps busy servers listed without
-// needing a gossip pick.
-func (s *server) recordConnectedServers(ctx context.Context) {
+// queueConnectedServers queues every connected FRAD server this node doesn't
+// know yet as a candidate. The DHT keeps connections to plenty of other
+// servers - including ones nobody has gossiped about yet - so this is a
+// second, independent way for servers to find each other. A connection alone
+// proves nothing about where a server can be reached, though, so they get the
+// same check as any candidate, starting from the addresses they report for
+// themselves. And a server is only queued with those found through other
+// servers (fromServers) if this node dialed it itself; one that only ever
+// dialed in is just someone talking to this node, from anywhere, and queues
+// with the lists anyone can push (fromPushed) - otherwise connecting in from a
+// handful of networks would be enough to crowd verified servers' candidates
+// out.
+func (s *server) queueConnectedServers() {
+	type queue struct {
+		src candidateSource
+		via string
+	}
+	queued := make(map[queue][]peer.AddrInfo)
 	for _, p := range s.h.Network().Peers() {
-		s.recordIfServer(ctx, p)
+		if s.store.isKnown(p) || !p2pnode.IsFradServer(s.h, p) {
+			continue
+		}
+		addrs := p2pnode.SelfReportedNodeAddrs(s.h, p, s.cfg.allowPrivate)
+		conns := s.h.Network().ConnsToPeer(p)
+		if len(addrs) == 0 || len(conns) == 0 {
+			continue
+		}
+		q := queue{src: fromPushed, via: p2pnode.NetworkKey(conns[0].RemoteMultiaddr())}
+		for _, c := range conns {
+			if c.Stat().Direction == network.DirOutbound {
+				q = queue{src: fromServers, via: p2pnode.NetworkKey(c.RemoteMultiaddr())}
+				break
+			}
+		}
+		queued[q] = append(queued[q], peer.AddrInfo{ID: p, Addrs: addrs})
+	}
+	for q, infos := range queued {
+		s.store.addCandidates(q.src, q.via, infos)
 	}
 }
 
@@ -304,9 +363,14 @@ func (s *server) ownAddrs() []ma.Multiaddr {
 
 // learned takes a list pushed by whoever opened a node-list stream - an app or
 // another server - as candidates; they still have to pass a check before this
-// node vouches for them.
-func (s *server) learned(_ peer.ID, infos []peer.AddrInfo) {
-	s.store.addCandidates(infos)
+// node vouches for them. Lists from servers already verified rank above
+// anybody's (see candidateSource).
+func (s *server) learned(from network.Conn, infos []peer.AddrInfo) {
+	src := fromPushed
+	if s.store.isKnown(from.RemotePeer()) {
+		src = fromServers
+	}
+	s.store.addCandidates(src, p2pnode.NetworkKey(from.RemoteMultiaddr()), infos)
 }
 
 func (s *server) dhtBootstrapPeers() []peer.AddrInfo {

@@ -77,7 +77,8 @@ type Config struct {
 	// BootstrapPeers is a newline-delimited list of multiaddrs, each including
 	// a trailing "/p2p/<peerid>" — the user-configurable bootstrap/relay node
 	// list (see README "Downloads"/"Project status" for why this can't ship
-	// with real defaults baked in).
+	// with real defaults baked in). Blank lines, '#' comments and lines that
+	// don't parse are skipped (see parseAddrInfos).
 	BootstrapPeers string
 	// RelayOnly hides this device's IP address from everyone but the
 	// bootstrap/relay nodes themselves: no listening sockets, no hole punching
@@ -445,7 +446,7 @@ func (n *Host) sharedNodes() []peer.AddrInfo {
 	return MergeNodeLists(MaxNodeListEntries, known, n.sharedBootstrapPeers)
 }
 
-func (n *Host) addLearnedNodes(_ peer.ID, infos []peer.AddrInfo) {
+func (n *Host) addLearnedNodes(_ network.Conn, infos []peer.AddrInfo) {
 	n.nodesMu.Lock()
 	defer n.nodesMu.Unlock()
 	n.learnedNodes = MergeNodeLists(MaxNodeListEntries, n.learnedNodes, infos)
@@ -471,26 +472,28 @@ func shareableNodes(infos []peer.AddrInfo, allowPrivate bool) []peer.AddrInfo {
 }
 
 // parseAddrInfos parses a newline-delimited list of "/ip4/.../p2p/<id>"-style
-// multiaddrs (blank lines ignored) into peer.AddrInfo, grouping multiple
-// addresses for the same peer id together.
+// multiaddrs into peer.AddrInfo, grouping multiple addresses for the same peer
+// id together. Blank lines and '#' comments are skipped - so a saved or
+// downloaded copy of the official nodes.txt works as is - and so is any line
+// that doesn't parse: one typo in a hand-edited list shouldn't keep the whole
+// wide-range layer from starting. Only a list with entries but not one usable
+// among them is an error, as that can only be a mistake.
 //
 // The user's order is kept (peer.AddrInfosFromP2pAddrs would shuffle it through
 // a map): it decides which peers are shared first (see sharedNodes).
 func parseAddrInfos(newlineDelimited string) ([]peer.AddrInfo, error) {
 	var infos []peer.AddrInfo
+	var errs []error
 	index := make(map[peer.ID]int)
 	for _, line := range strings.Split(newlineDelimited, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		ma, err := multiaddr.NewMultiaddr(line)
+		transport, id, err := parseBootstrapAddr(line)
 		if err != nil {
-			return nil, fmt.Errorf("invalid bootstrap multiaddr %q: %w", line, err)
-		}
-		transport, id := peer.SplitAddr(ma)
-		if id == "" {
-			return nil, fmt.Errorf("bootstrap multiaddr %q needs a trailing /p2p/<peerid>", line)
+			errs = append(errs, err)
+			continue
 		}
 		i, seen := index[id]
 		if !seen {
@@ -498,9 +501,24 @@ func parseAddrInfos(newlineDelimited string) ([]peer.AddrInfo, error) {
 			index[id] = i
 			infos = append(infos, peer.AddrInfo{ID: id})
 		}
-		if transport != nil {
+		if transport != nil && !multiaddr.Contains(infos[i].Addrs, transport) {
 			infos[i].Addrs = append(infos[i].Addrs, transport)
 		}
 	}
+	if len(infos) == 0 && len(errs) > 0 {
+		return nil, fmt.Errorf("no usable bootstrap multiaddr: %w", errors.Join(errs...))
+	}
 	return infos, nil
+}
+
+func parseBootstrapAddr(line string) (multiaddr.Multiaddr, peer.ID, error) {
+	addr, err := multiaddr.NewMultiaddr(line)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid bootstrap multiaddr %q: %w", line, err)
+	}
+	transport, id := peer.SplitAddr(addr)
+	if id == "" {
+		return nil, "", fmt.Errorf("bootstrap multiaddr %q needs a trailing /p2p/<peerid>", line)
+	}
+	return transport, id, nil
 }

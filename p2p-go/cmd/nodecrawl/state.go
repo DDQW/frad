@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 
@@ -25,6 +26,13 @@ const (
 	// the next run, so this stays well under the default contact budget (200)
 	// to leave room for discovering nodes nobody tracks yet.
 	maxTrackedNodes = 150
+	// newcomerSlots of those are kept for nodes still working towards
+	// qualifying, however many qualified ones there are. Without them, once
+	// maxTrackedNodes established servers existed - real ones, or a patient
+	// attacker's - every new server would be trimmed the run it was found in
+	// and could never collect its sightings. The rest is still enough to track
+	// a full list's worth of qualified servers (maxListedEntries).
+	newcomerSlots = maxTrackedNodes - maxListedEntries
 )
 
 // crawlState is crawl-state.json: what the crawler remembers between runs. It
@@ -49,7 +57,7 @@ type nodeState struct {
 // observation is what contacting one node showed.
 type observation struct {
 	alive bool
-	addrs []ma.Multiaddr // what the node reported for itself, if alive
+	addrs []ma.Multiaddr // where it was proven reachable (p2pnode.VerifyNodeAddrs), if alive
 }
 
 func newCrawlState() crawlState {
@@ -57,8 +65,10 @@ func newCrawlState() crawlState {
 }
 
 // update applies one run's observations. Nodes that weren't contacted this
-// run (the crawl budget ran out) keep their state unchanged.
-func (s *crawlState) update(results map[peer.ID]observation) {
+// run (the crawl budget or time ran out) keep their state unchanged. listed
+// is the list being replaced (pinned and current entries): those nodes keep
+// their places first when the state is trimmed.
+func (s *crawlState) update(results map[peer.ID]observation, listed []peer.AddrInfo) {
 	for id, obs := range results {
 		key := id.String()
 		ns := s.Nodes[key]
@@ -81,29 +91,55 @@ func (s *crawlState) update(results map[peer.ID]observation) {
 			delete(s.Nodes, key)
 		}
 	}
-	s.trim()
+	isListed := make(map[peer.ID]bool, len(listed))
+	for _, info := range listed {
+		isListed[info.ID] = true
+	}
+	s.trim(isListed)
 }
 
-// trim keeps the maxTrackedNodes most established entries.
-func (s *crawlState) trim() {
-	keys := s.keysByPriority()
-	if len(keys) <= maxTrackedNodes {
-		return
+// trim enforces the state's bounds. Going through the nodes in priority
+// order - listed qualified nodes, other qualified ones, then the rest by
+// streak, peer id breaking ties - it keeps at most maxNodesPerNetwork per
+// network (p2pnode.MergeNodeLists, by the verified addresses recorded), at
+// most maxTrackedNodes-newcomerSlots qualified ones and maxTrackedNodes in
+// all. The network cap is what keeps many peer ids on one machine or address
+// block from taking every slot - and with it every seed of the next run.
+func (s *crawlState) trim(listed map[peer.ID]bool) {
+	ordered := s.infos(s.keysByPriority(listed), true)
+	keep := make(map[string]bool, maxTrackedNodes)
+	qualified := 0
+	for _, info := range p2pnode.MergeNodeLists(math.MaxInt, ordered) {
+		key := info.ID.String()
+		isQualified := s.Nodes[key].Streak >= qualifyingStreak
+		if len(keep) == maxTrackedNodes || (isQualified && qualified == maxTrackedNodes-newcomerSlots) {
+			continue
+		}
+		keep[key] = true
+		if isQualified {
+			qualified++
+		}
 	}
-	for _, k := range keys[maxTrackedNodes:] {
-		delete(s.Nodes, k)
-	}
+	maps.DeleteFunc(s.Nodes, func(key string, _ *nodeState) bool { return !keep[key] })
 }
 
-// keysByPriority orders the tracked nodes most established (longest streak)
-// first, then by peer id.
-func (s *crawlState) keysByPriority() []string {
-	keys := make([]string, 0, len(s.Nodes))
-	for k := range s.Nodes {
-		keys = append(keys, k)
+// keysByPriority orders the tracked nodes most established first: listed
+// qualified nodes, other qualified ones, then by streak - peer id breaking
+// ties.
+func (s *crawlState) keysByPriority(listed map[peer.ID]bool) []string {
+	rank := func(key string) int {
+		ns := s.Nodes[key]
+		if ns.Streak < qualifyingStreak {
+			return ns.Streak
+		}
+		if id, err := peer.Decode(key); err == nil && listed[id] {
+			return qualifyingStreak + 1
+		}
+		return qualifyingStreak
 	}
+	keys := slices.Collect(maps.Keys(s.Nodes))
 	slices.SortFunc(keys, func(a, b string) int {
-		return cmp.Or(cmp.Compare(s.Nodes[b].Streak, s.Nodes[a].Streak), cmp.Compare(a, b))
+		return cmp.Or(cmp.Compare(rank(b), rank(a)), cmp.Compare(a, b))
 	})
 	return keys
 }
@@ -111,7 +147,7 @@ func (s *crawlState) keysByPriority() []string {
 // tracked returns the state's nodes as seeds for the next crawl, most
 // established first.
 func (s *crawlState) tracked(allowPrivate bool) []peer.AddrInfo {
-	return s.infos(s.keysByPriority(), allowPrivate)
+	return s.infos(s.keysByPriority(nil), allowPrivate)
 }
 
 // qualified returns the nodes eligible for listing, sorted by id.

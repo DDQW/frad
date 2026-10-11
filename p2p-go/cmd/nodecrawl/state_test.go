@@ -13,6 +13,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+
+	p2pnode "frad.local/p2p-go/node"
 )
 
 func randomID(t testing.TB) peer.ID {
@@ -51,7 +53,7 @@ func TestStateUpdateTransitions(t *testing.T) {
 	}
 
 	for run := 1; run <= 4; run++ {
-		s.update(map[peer.ID]observation{a.ID: alive(a), b.ID: alive(b), never.ID: {}})
+		s.update(map[peer.ID]observation{a.ID: alive(a), b.ID: alive(b), never.ID: {}}, nil)
 		if want := min(run, qualifyingStreak); streak(a) != want || streak(b) != want {
 			t.Fatalf("run %d: streaks %d/%d, want %d (saturating)", run, streak(a), streak(b), want)
 		}
@@ -61,34 +63,34 @@ func TestStateUpdateTransitions(t *testing.T) {
 	}
 
 	// One missed check: a qualified node keeps its place...
-	s.update(map[peer.ID]observation{a.ID: {}})
+	s.update(map[peer.ID]observation{a.ID: {}}, nil)
 	if streak(a) != qualifyingStreak || !s.Nodes[a.ID.String()].Missed {
 		t.Fatal("a listed node must survive one missed check")
 	}
 	// ...and recovers fully when it answers again.
-	s.update(map[peer.ID]observation{a.ID: alive(a)})
+	s.update(map[peer.ID]observation{a.ID: alive(a)}, nil)
 	if streak(a) != qualifyingStreak || s.Nodes[a.ID.String()].Missed {
 		t.Fatal("answering again must clear the miss")
 	}
 	// Two in a row: forgotten.
-	s.update(map[peer.ID]observation{a.ID: {}})
-	s.update(map[peer.ID]observation{a.ID: {}})
+	s.update(map[peer.ID]observation{a.ID: {}}, nil)
+	s.update(map[peer.ID]observation{a.ID: {}}, nil)
 	if streak(a) != -1 {
 		t.Fatal("two missed checks in a row must forget the node")
 	}
 
 	// A node not yet qualified must be seen in consecutive runs.
 	c := node(t, "/ip4/93.184.217.1/tcp/4001")
-	s.update(map[peer.ID]observation{c.ID: alive(c)})
-	s.update(map[peer.ID]observation{c.ID: alive(c)})
-	s.update(map[peer.ID]observation{c.ID: {}})
+	s.update(map[peer.ID]observation{c.ID: alive(c)}, nil)
+	s.update(map[peer.ID]observation{c.ID: alive(c)}, nil)
+	s.update(map[peer.ID]observation{c.ID: {}}, nil)
 	if streak(c) != -1 {
 		t.Fatal("a miss before qualifying must reset the node")
 	}
 
 	// Nodes not contacted in a run (budget exhausted) keep their state.
 	before := *s.Nodes[b.ID.String()]
-	s.update(map[peer.ID]observation{})
+	s.update(map[peer.ID]observation{}, nil)
 	if after := *s.Nodes[b.ID.String()]; after.Streak != before.Streak || after.Missed != before.Missed {
 		t.Fatal("an uncontacted node's state changed")
 	}
@@ -99,7 +101,7 @@ func TestStateIsStableWhenNothingChanges(t *testing.T) {
 	a := node(t, "/ip4/93.184.216.1/udp/4001/quic-v1", "/ip4/93.184.216.1/tcp/4001")
 	var snapshots []string
 	for run := 0; run < 5; run++ {
-		s.update(map[peer.ID]observation{a.ID: alive(a)})
+		s.update(map[peer.ID]observation{a.ID: alive(a)}, nil)
 		data, err := s.marshal()
 		if err != nil {
 			t.Fatal(err)
@@ -121,17 +123,150 @@ func TestStateIsStableWhenNothingChanges(t *testing.T) {
 func TestStateTrimKeepsMostEstablished(t *testing.T) {
 	s := newCrawlState()
 	veteran := node(t, "/ip4/93.184.216.1/tcp/4001")
-	s.update(map[peer.ID]observation{veteran.ID: alive(veteran)})
-	s.update(map[peer.ID]observation{veteran.ID: alive(veteran)})
+	s.update(map[peer.ID]observation{veteran.ID: alive(veteran)}, nil)
+	s.update(map[peer.ID]observation{veteran.ID: alive(veteran)}, nil)
 	results := map[peer.ID]observation{}
 	for i := 0; i < maxTrackedNodes+10; i++ {
 		n := node(t, fmt.Sprintf("/ip4/93.%d.%d.1/tcp/4001", 1+i/200, i%200))
 		results[n.ID] = alive(n)
 	}
-	s.update(results)
+	s.update(results, nil)
 	if len(s.Nodes) != maxTrackedNodes || s.Nodes[veteran.ID.String()] == nil {
 		t.Fatalf("tracking %d nodes (veteran kept: %v), want %d", len(s.Nodes), s.Nodes[veteran.ID.String()] != nil, maxTrackedNodes)
 	}
+}
+
+// TestStateTrimCapsEachNetwork: peer ids on one network share its two
+// places in the state - however established they are - so they can't fill
+// it, and with it the next run's seeds.
+func TestStateTrimCapsEachNetwork(t *testing.T) {
+	s := newCrawlState()
+	results := map[peer.ID]observation{}
+	var sameNet []peer.AddrInfo
+	for i := 0; i < 10; i++ {
+		n := node(t, fmt.Sprintf("/ip4/93.184.216.%d/tcp/4001", i+1))
+		sameNet = append(sameNet, n)
+		results[n.ID] = alive(n)
+	}
+	elsewhere := node(t, "/ip4/198.51.100.1/tcp/4001")
+	results[elsewhere.ID] = alive(elsewhere)
+	s.update(results, nil)
+	if len(s.Nodes) != 3 || s.Nodes[elsewhere.ID.String()] == nil {
+		t.Fatalf("tracking %d nodes, want 2 from the crowded /24 plus the other one", len(s.Nodes))
+	}
+	// The two kept are the lowest ids - and they keep their places against
+	// newcomers on the same network.
+	sortByID(sameNet)
+	newcomer := node(t, "/ip4/93.184.216.99/tcp/4001")
+	s.update(map[peer.ID]observation{sameNet[0].ID: alive(sameNet[0]), sameNet[1].ID: alive(sameNet[1]), newcomer.ID: alive(newcomer)}, nil)
+	if s.Nodes[newcomer.ID.String()] != nil || s.Nodes[sameNet[0].ID.String()].Streak != 2 {
+		t.Fatal("a newcomer took an established node's place on its network")
+	}
+}
+
+// TestStateTrimKeepsRoomForNewcomers: a state full of established nodes
+// still takes a new server in and lets it collect its sightings, without
+// costing a listed node its place.
+func TestStateTrimKeepsRoomForNewcomers(t *testing.T) {
+	var nodes []peer.AddrInfo
+	for i := 0; i <= maxTrackedNodes; i++ {
+		nodes = append(nodes, node(t, fmt.Sprintf("/ip4/93.%d.%d.1/tcp/4001", 1+i/200, i%200)))
+	}
+	sortByID(nodes)
+	// The lowest id, so it wins the tie-break once qualified - which shows
+	// who it displaces then.
+	newcomer, established := nodes[0], nodes[1:]
+	listed := established[len(established)-5:] // the highest ids: last in line but for being listed
+	s := newCrawlState()
+	for _, n := range established {
+		s.Nodes[n.ID.String()] = &nodeState{Addrs: addrStrings(n.Addrs), Streak: qualifyingStreak}
+	}
+
+	for run := 1; run <= qualifyingStreak; run++ {
+		s.update(map[peer.ID]observation{newcomer.ID: alive(newcomer)}, listed)
+		if ns := s.Nodes[newcomer.ID.String()]; ns == nil || ns.Streak != run {
+			t.Fatalf("run %d: the newcomer wasn't tracked (%+v)", run, ns)
+		}
+		for _, n := range listed {
+			if s.Nodes[n.ID.String()] == nil {
+				t.Fatalf("run %d: a listed node was trimmed", run)
+			}
+		}
+		if q := len(s.qualified(false)); q > maxTrackedNodes-newcomerSlots {
+			t.Fatalf("run %d: %d qualified nodes tracked, limit %d", run, q, maxTrackedNodes-newcomerSlots)
+		}
+	}
+}
+
+// TestNextLevelSkipsNetworksWithEnoughServers: once a network has shown two
+// live servers, the crawl spends nothing more on it - a chain of peer ids on
+// one machine ends there - but an address of the same node elsewhere is
+// still tried.
+func TestNextLevelSkipsNetworksWithEnoughServers(t *testing.T) {
+	a, b := node(t, "/ip4/93.184.216.1/tcp/4001"), node(t, "/ip4/93.184.216.2/tcp/4001")
+	dead := node(t, "/ip4/198.51.100.1/tcp/4001")
+	contacted := map[peer.ID]observation{a.ID: alive(a), b.ID: alive(b), dead.ID: {}}
+	chained := node(t, "/ip4/93.184.216.3/tcp/4001")
+	dualHomed := node(t, "/ip4/93.184.216.4/tcp/4001", "/ip6/2a01:4f8:1::4/tcp/4001")
+	sameAsDead := node(t, "/ip4/198.51.100.2/tcp/4001")
+	heard := []heardList{{via: sourceNetwork(a.Addrs), infos: []peer.AddrInfo{chained, dualHomed, sameAsDead, a}}}
+	got := nextLevel(heard, contacted, banList{})
+
+	want := map[peer.ID]string{
+		dualHomed.ID:  "/ip6/2a01:4f8:1::4/tcp/4001",
+		sameAsDead.ID: "/ip4/198.51.100.2/tcp/4001",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("next level %v, want only the dual-homed node (IPv6) and the one beside a dead node", got)
+	}
+	for _, info := range got {
+		if w, ok := want[info.ID]; !ok || len(info.Addrs) != 1 || info.Addrs[0].String() != w {
+			t.Fatalf("next level %v, want only the dual-homed node (IPv6) and the one beside a dead node", got)
+		}
+	}
+}
+
+// TestNextLevelSharesBudgetByNetwork: a live node listing a flood of made-up
+// peers - each on a network of its own, so no diversity cap stops them, and
+// with peer ids picked to come first - gets one turn like every other network
+// that answered, so the newcomer an honest server named is still among the
+// first contacts the budget pays for.
+func TestNextLevelSharesBudgetByNetwork(t *testing.T) {
+	var ids []peer.AddrInfo
+	for i := 0; i <= p2pnode.MaxNodeListEntries; i++ {
+		ids = append(ids, node(t))
+	}
+	sortByID(ids)
+	newcomer := ids[len(ids)-1] // the highest id: last in line by id alone
+	newcomer.Addrs = addrs(t, "/ip4/203.0.113.1/tcp/4001")
+	var flood []peer.AddrInfo
+	for i, fake := range ids[:len(ids)-1] {
+		fake.Addrs = addrs(t, fmt.Sprintf("/ip4/93.%d.%d.1/tcp/4001", 1+i/200, i%200))
+		flood = append(flood, fake)
+	}
+
+	liar, honest := node(t, "/ip4/198.51.100.1/tcp/4001"), node(t, "/ip6/2a01:4f8:1::1/tcp/4001")
+	contacted := map[peer.ID]observation{liar.ID: alive(liar), honest.ID: alive(honest)}
+	heard := []heardList{
+		{via: sourceNetwork(liar.Addrs), infos: flood},
+		{via: sourceNetwork(honest.Addrs), infos: []peer.AddrInfo{newcomer}},
+	}
+	got := nextLevel(heard, contacted, banList{})
+	if len(got) != len(flood)+1 {
+		t.Fatalf("next level has %d nodes, want all %d heard", len(got), len(flood)+1)
+	}
+	if first := peer.AddrInfosToIDs(got[:2]); !slices.Contains(first, newcomer.ID) {
+		t.Fatalf("the newcomer isn't among the first two contacts %v: one network's list took the budget", first)
+	}
+}
+
+func addrs(t testing.TB, ss ...string) []ma.Multiaddr {
+	t.Helper()
+	var out []ma.Multiaddr
+	for _, s := range ss {
+		out = append(out, ma.StringCast(s))
+	}
+	return out
 }
 
 func TestSelectListedCapsAndPriorities(t *testing.T) {
@@ -223,7 +358,7 @@ func TestSelectionIsDeterministic(t *testing.T) {
 		}
 	}
 	for run := 0; run < qualifyingStreak; run++ {
-		s.update(results)
+		s.update(results, nil)
 	}
 	want := renderNodeList(selectListed(s.qualified(false), nil, current, banList{}, maxListedEntries))
 	for i := 0; i < 10; i++ {

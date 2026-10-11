@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	dhtpkg "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -281,7 +283,7 @@ func startNodeListServer(t *testing.T, list []peer.AddrInfo) (host.Host, func() 
 	var received []peer.AddrInfo
 	h.SetStreamHandler(NodesProtocolID, NodeListHandler(
 		func() []peer.AddrInfo { return list },
-		func(_ peer.ID, infos []peer.AddrInfo) {
+		func(_ network.Conn, infos []peer.AddrInfo) {
 			mu.Lock()
 			defer mu.Unlock()
 			received = append(received, infos...)
@@ -342,6 +344,41 @@ func TestBootstrapPeersSharedOnlyIfPublic(t *testing.T) {
 	}
 }
 
+// TestBootstrapPeersSkipCommentsAndTypos: the official nodes.txt (with its
+// '#' header) works as a bootstrap list as is, and one bad line doesn't cost
+// the rest of the list - only a list without a single usable entry fails.
+func TestBootstrapPeersSkipCommentsAndTypos(t *testing.T) {
+	a, b := newPeerID(t).String(), newPeerID(t).String()
+	infos, err := parseAddrInfos(strings.Join([]string{
+		"# FRAD official node list - see README.md next to this file.",
+		"#",
+		"/ip4/93.184.216.34/tcp/4001/p2p/" + a,
+		"/ip4/93.184.216.34/tcp/4001/p2p/" + a, // duplicate
+		"/ip4/93.184.216.34/tcp/4001",          // no peer id
+		"not a multiaddr",
+		"  /ip4/198.51.100.7/udp/4001/quic-v1/p2p/" + b + "  ",
+	}, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := FormatNodeList(infos); got != "/ip4/93.184.216.34/tcp/4001/p2p/"+a+"\n/ip4/198.51.100.7/udp/4001/quic-v1/p2p/"+b+"\n" {
+		t.Fatalf("parsed:\n%s", got)
+	}
+	if infos, err := parseAddrInfos("# only a comment\n\n"); err != nil || len(infos) != 0 {
+		t.Fatalf("a list of comments is just empty: %v %v", infos, err)
+	}
+	if _, err := parseAddrInfos("# header\nnot a multiaddr\n/ip4/93.184.216.34/tcp/4001"); err == nil {
+		t.Fatal("expected an error for a list without one usable entry")
+	}
+
+	// End to end: a host starts from the official list's format.
+	server, _ := startNodeListServer(t, nil)
+	app := newTestHost(t, &Config{BootstrapPeers: "# FRAD official node list\n" + p2pAddrs(server)})
+	if _, err := app.ExchangeNodesWithBootstrapPeers(); err != nil {
+		t.Fatalf("bootstrap peer from a commented list unusable: %v", err)
+	}
+}
+
 func TestNodeListHandlerRejectsOversizedLists(t *testing.T) {
 	server, received := startNodeListServer(t, nodeListOf(t, "/ip4/93.184.216.1/tcp/4001"))
 	client, err := libp2p.New(libp2p.NoListenAddrs)
@@ -376,6 +413,106 @@ func TestNodeListHandlerRejectsOversizedLists(t *testing.T) {
 	theirs, err := ExchangeNodeList(ctx, client, server.ID(), tooMany[:3], true)
 	if err != nil || len(theirs) != 1 || len(received()) != 3 {
 		t.Fatalf("follow-up exchange: theirs=%v received=%v err=%v", theirs, received(), err)
+	}
+}
+
+// TestNodeListHandlerLimitsEachPeer: a peer holding its share of the
+// handler's slots with streams that never finish can't take any more - and
+// can't lock anyone else out either.
+func TestNodeListHandlerLimitsEachPeer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	limiter := newExchangeLimiter()
+	server, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	list := nodeListOf(t, "/ip4/93.184.216.1/tcp/4001")
+	server.SetStreamHandler(NodesProtocolID, nodeListHandler(func() []peer.AddrInfo { return list }, nil, true, limiter))
+	serverInfo := peer.AddrInfo{ID: server.ID(), Addrs: server.Addrs()}
+
+	staller, err := libp2p.New(libp2p.NoListenAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staller.Close()
+	if err := staller.Connect(ctx, serverInfo); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxExchangesPerPeer; i++ {
+		s, err := staller.NewStream(ctx, server.ID(), NodesProtocolID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Reset()
+		// Protocol negotiation is lazy: the handler only runs once something
+		// is written. Half a line, and the list never ends.
+		if _, err := s.Write([]byte("/ip4/")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, ctx, "the staller's streams to hold their slots", func() bool {
+		return limiter.inUse(staller.ID()) == maxExchangesPerPeer
+	})
+	if _, err := ExchangeNodeList(ctx, staller, server.ID(), nil, true); err == nil {
+		t.Fatal("a peer got more than its share of exchange slots")
+	}
+
+	other, err := libp2p.New(libp2p.NoListenAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.Connect(ctx, serverInfo); err != nil {
+		t.Fatal(err)
+	}
+	if theirs, err := ExchangeNodeList(ctx, other, server.ID(), nil, true); err != nil || len(theirs) != 1 {
+		t.Fatalf("another peer was locked out: %v %v", theirs, err)
+	}
+}
+
+func TestExchangeLimiter(t *testing.T) {
+	l := newExchangeLimiter()
+	a, b := newPeerID(t), newPeerID(t)
+	var held []exchangeSource
+	for i := 0; i < maxExchangesPerPeer; i++ {
+		held = append(held, exchangeSource{peer: a, network: "net-a"})
+	}
+	for _, src := range held {
+		if !l.acquire(src) {
+			t.Fatal("refused a slot within the per-peer limit")
+		}
+	}
+	if l.acquire(exchangeSource{peer: a, network: "net-x"}) {
+		t.Fatal("a peer exceeded maxExchangesPerPeer")
+	}
+	// Other peers on a's network share its per-network quota.
+	for i := maxExchangesPerPeer; i < maxExchangesPerNetwork; i++ {
+		src := exchangeSource{peer: newPeerID(t), network: "net-a"}
+		if !l.acquire(src) {
+			t.Fatal("refused a slot within the per-network limit")
+		}
+		held = append(held, src)
+	}
+	if l.acquire(exchangeSource{peer: b, network: "net-a"}) {
+		t.Fatal("a network exceeded maxExchangesPerNetwork")
+	}
+	for i := len(held); i < maxConcurrentNodeExchanges; i++ {
+		src := exchangeSource{peer: newPeerID(t), network: fmt.Sprintf("net-%d", i)}
+		if !l.acquire(src) {
+			t.Fatal("refused a slot within the overall limit")
+		}
+		held = append(held, src)
+	}
+	if l.acquire(exchangeSource{peer: b, network: "net-b"}) {
+		t.Fatal("exceeded maxConcurrentNodeExchanges")
+	}
+	for _, src := range held {
+		l.release(src)
+	}
+	if l.total != 0 || len(l.byPeer) != 0 || len(l.byNetwork) != 0 {
+		t.Fatalf("slots leaked: %+v", l)
 	}
 }
 
@@ -417,17 +554,26 @@ func TestIsFradServer(t *testing.T) {
 	}
 }
 
-// TestVerifiedNodeAddrsIgnoreHearsay checks a server's listed addresses are
-// the ones it reports itself (or that were actually dialed), not whatever the
-// list that pointed us at it claimed - even for a server already connected.
-func TestVerifiedNodeAddrsIgnoreHearsay(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// TestVerifyNodeAddrsProvesEachAddress checks a server is listed only at
+// addresses it has been reached at: not where a list that pointed at it says
+// it is, and not wherever it claims to be either - only its claims that
+// survive a dial-back count.
+func TestVerifyNodeAddrsProvesEachAddress(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	server, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic-v1"))
+	// Claimed next to its real addresses; nothing listens there.
+	claimed := []ma.Multiaddr{ma.StringCast("/ip4/127.0.0.1/tcp/1"), ma.StringCast("/ip4/127.0.0.2/tcp/1")}
+	server, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic-v1"),
+		libp2p.AddrsFactory(func(detected []ma.Multiaddr) []ma.Multiaddr { return slices.Concat(claimed, detected) }),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.Close()
+	listening := slices.DeleteFunc(server.Network().ListenAddresses(), func(a ma.Multiaddr) bool {
+		return CheckNodeAddr(a, true) != nil // the relay transport's /p2p-circuit
+	})
 	observer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 	if err != nil {
 		t.Fatal(err)
@@ -442,33 +588,109 @@ func TestVerifiedNodeAddrsIgnoreHearsay(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ...and then a hostile list claims a different address for it.
-	planted := ma.StringCast("/ip4/127.0.0.2/tcp/4001")
+	planted := ma.StringCast("/ip4/127.0.0.3/tcp/4001")
 	if err := observer.Connect(ctx, peer.AddrInfo{ID: server.ID(), Addrs: []ma.Multiaddr{planted}}); err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, ctx, "the server's identify to be recorded", func() bool {
-		return len(VerifiedNodeAddrs(observer, server.ID(), true)) > 0
-	})
-	if got := VerifiedNodeAddrs(observer, server.ID(), true); !sameAddrSet(got, server.Addrs()) {
-		t.Fatalf("verified %v, want the server's own %v", got, server.Addrs())
+	if got := VerifyNodeAddrs(ctx, observer, server.ID(), true); !sameAddrSet(got, listening) {
+		t.Fatalf("verified %v, want only the addresses the server listens on, %v", got, listening)
 	}
-	if got := VerifiedNodeAddrs(observer, server.ID(), false); len(got) != 0 {
+	if got := VerifyNodeAddrs(ctx, observer, server.ID(), false); len(got) != 0 {
 		t.Fatalf("loopback addresses must not verify for the internet, got %v", got)
 	}
+	if got := SelfReportedNodeAddrs(observer, server.ID(), true); len(got) != len(claimed)+len(listening) {
+		t.Fatalf("self-reported %v, want every claim (verified or not)", got)
+	}
 
-	// Without the recorder, an address this host dialed itself still counts.
+	// Without the recorder there is nothing to dial back, but an address this
+	// host dialed itself still counts.
 	dialer, err := libp2p.New(libp2p.NoListenAddrs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dialer.Close()
-	tcpOnly := server.Addrs()[:1]
+	tcpOnly := listening[:1]
 	if err := dialer.Connect(ctx, peer.AddrInfo{ID: server.ID(), Addrs: tcpOnly}); err != nil {
 		t.Fatal(err)
 	}
-	if got := VerifiedNodeAddrs(dialer, server.ID(), true); !sameAddrSet(got, tcpOnly) {
+	quick, cancelQuick := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelQuick()
+	if got := VerifyNodeAddrs(quick, dialer, server.ID(), true); !sameAddrSet(got, tcpOnly) {
 		t.Fatalf("verified %v, want the dialed %v", got, tcpOnly)
+	}
+}
+
+// TestVerifyNodeAddrsResolvesClaimedNames: a server that announces itself
+// only by DNS name (-announce /dns4/...) and has only ever connected in - as a
+// server does to the -peer it federates with - is still verified: its name
+// is resolved and dialed back, and it is the IP that answered that gets
+// listed, never the name, so the diversity caps see the network it is on.
+func TestVerifyNodeAddrsResolvesClaimedNames(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	server, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.AddrsFactory(func(detected []ma.Multiaddr) []ma.Multiaddr {
+			var named []ma.Multiaddr
+			for _, a := range detected {
+				if len(a) > 1 && a[0].Code() == ma.P_IP4 {
+					named = append(named, ma.StringCast("/dns4/localhost").Encapsulate(a[1:]))
+				}
+			}
+			return named
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	listening := slices.DeleteFunc(server.Network().ListenAddresses(), func(a ma.Multiaddr) bool {
+		return CheckNodeAddr(a, true) != nil // the relay transport's /p2p-circuit
+	})
+	observer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	if err := RecordSelfReportedAddrs(ctx, observer); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Connect(ctx, peer.AddrInfo{ID: observer.ID(), Addrs: observer.Addrs()}); err != nil {
+		t.Fatal(err)
+	}
+	if !AwaitSelfReport(ctx, observer, server.ID()) {
+		t.Fatal("no identify report from the server")
+	}
+	if got := SelfReportedNodeAddrs(observer, server.ID(), true); len(got) != 1 || got[0].String() != "/dns4/localhost"+strings.TrimPrefix(listening[0].String(), "/ip4/127.0.0.1") {
+		t.Fatalf("the server reported %v, want only its DNS name", got)
+	}
+
+	if got := VerifyNodeAddrs(ctx, observer, server.ID(), true); !sameAddrSet(got, listening) {
+		t.Fatalf("verified %v, want the IP address the name led to, %v", got, listening)
+	}
+}
+
+// TestDialBackChecksIdentity: an address where some other node answers
+// doesn't verify - the handshake must authenticate the claimed peer id.
+func TestDialBackChecksIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	other, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	dialer, err := libp2p.New(libp2p.NoListenAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dialer.Close()
+	if !dialBack(ctx, dialer, other.ID(), other.Addrs()[0]) {
+		t.Fatal("dial-back to a node's real address failed")
+	}
+	if dialBack(ctx, dialer, newPeerID(t), other.Addrs()[0]) {
+		t.Fatal("an address verified for a peer id that doesn't live there")
 	}
 }
 

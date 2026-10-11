@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -27,14 +28,18 @@ import (
 func main() {
 	dir := flag.String("dir", "nodes", "directory holding nodes.txt, pinned.txt, banned.txt and crawl-state.json")
 	maxContacts := flag.Int("max-contacts", 200, "most nodes contacted in one run")
+	maxLevels := flag.Int("max-levels", 10, "most breadth-first levels in one run, the seeds included")
 	nodeTimeout := flag.Duration("node-timeout", 10*time.Second, "time allowed per node")
+	timeout := flag.Duration("timeout", 15*time.Minute, "time allowed for the whole crawl; what was found by then is still written")
 	parallelism := flag.Int("parallelism", 16, "nodes contacted at once")
 	allowPrivate := flag.Bool("allow-private-addrs", false, "accept private/loopback addresses - only for LAN test networks")
 	flag.Parse()
 
 	cfg := crawlConfig{
 		maxContacts:  *maxContacts,
+		maxLevels:    *maxLevels,
 		nodeTimeout:  *nodeTimeout,
+		timeout:      *timeout,
 		parallelism:  *parallelism,
 		allowPrivate: *allowPrivate,
 		logf:         log.Printf,
@@ -64,7 +69,7 @@ func run(ctx context.Context, dir string, cfg crawlConfig) error {
 	mine := p2pnode.MergeNodeLists(p2pnode.MaxNodeListEntries, in.pinned, in.current)
 	results := crawl(ctx, h, seeds, mine, in.banned, cfg)
 
-	in.state.update(results)
+	in.state.update(results, append(slices.Clone(in.pinned), in.current...))
 	listed := selectListed(in.state.qualified(cfg.allowPrivate), in.pinned, in.current, in.banned, maxListedEntries)
 	cfg.logf("contacted %d nodes, %d alive; listing %d nodes (%d pinned)",
 		len(results), countAlive(results), len(listed), len(in.pinned))

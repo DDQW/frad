@@ -12,7 +12,8 @@ package node
 // bounds it (MaxNodeListEntries, maxNodeListBytes, maxAddrsPerNode) and limits
 // how much of a merged list one network may take up (maxNodesPerNetwork), and
 // callers only promote an entry to "known server" once they have connected to
-// it themselves and seen it run FRAD's DHT (IsFradServer).
+// it themselves, seen it run FRAD's DHT (IsFradServer) and proven the
+// addresses they list it at (VerifyNodeAddrs).
 //
 // Only ValidateNodeList and the constants cross the gomobile boundary; the rest
 // takes libp2p types, which gomobile skips, and is shared with cmd/bootstrap
@@ -28,6 +29,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/connmgr"
@@ -37,7 +39,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/transport"
 	ma "github.com/multiformats/go-multiaddr"
+	madns "github.com/multiformats/go-multiaddr-dns"
 )
 
 const (
@@ -64,6 +68,10 @@ const (
 	// nodeExchangeTimeout bounds one whole exchange, so a peer that stalls can't
 	// hold a stream - or one of a server's handler slots - open indefinitely.
 	nodeExchangeTimeout = 10 * time.Second
+	// openerListTimeout bounds how long the handler waits for the opener's
+	// list (16 KiB at most - a couple of seconds even on a poor mobile link),
+	// so a stream that never sends anything gives its slot back early.
+	openerListTimeout = 5 * time.Second
 	// maxAddrsPerNode lets one server list a few transports and address
 	// families (TCP + QUIC, IPv4 + IPv6) without crowding out other servers.
 	maxAddrsPerNode = 4
@@ -75,9 +83,19 @@ const (
 	// maxConcurrentNodeExchanges bounds inbound exchanges served at once, so a
 	// burst of streams can't tie up a server beyond a fixed amount of memory.
 	maxConcurrentNodeExchanges = 16
-	// selfReportWait bounds AwaitVerifiedNodeAddrs's wait for a peer's
-	// identify report; it normally lands within milliseconds of connecting.
+	// maxExchangesPerPeer and maxExchangesPerNetwork split those slots up, so
+	// one peer - or one machine cycling through peer ids, which libp2p's
+	// resource manager lets hold 8 connections per IPv4 address - can't
+	// occupy all of them and lock everyone else out of the exchange.
+	maxExchangesPerPeer    = 2
+	maxExchangesPerNetwork = 4
+	// selfReportWait bounds AwaitSelfReport's wait for a peer's identify
+	// report; it normally lands within milliseconds of connecting.
 	selfReportWait = 2 * time.Second
+	// dialBackTimeout bounds proving one address (see VerifyNodeAddrs). A
+	// real server answers in well under a second; a made-up address may
+	// never answer at all.
+	dialBackTimeout = 5 * time.Second
 )
 
 var (
@@ -144,7 +162,7 @@ func nodeLine(addr ma.Multiaddr, id peer.ID) string {
 // MergeNodeLists combines lists in priority order - earlier lists, and earlier
 // entries within a list, win - into one list grouped by peer id. It keeps at
 // most maxAddrsPerNode addresses per peer, at most maxNodesPerNetwork peers per
-// network (see networkKey) and at most maxEntries addresses overall. Entries
+// network (see NetworkKey) and at most maxEntries addresses overall. Entries
 // are expected to be validated already (ParseNodeList, CheckNodeAddr).
 func MergeNodeLists(maxEntries int, lists ...[]peer.AddrInfo) []peer.AddrInfo {
 	var b nodeListBuilder
@@ -156,7 +174,7 @@ func MergeNodeLists(maxEntries int, lists ...[]peer.AddrInfo) []peer.AddrInfo {
 				if total >= maxEntries {
 					return b.infos
 				}
-				key := networkKey(addr)
+				key := NetworkKey(addr)
 				members := peersByNetwork[key]
 				if len(members) >= maxNodesPerNetwork && !members[info.ID] {
 					continue
@@ -345,9 +363,10 @@ func isLocalOnlyDomain(name string) bool {
 	return false
 }
 
-// networkKey names the network an address counts against for the diversity
-// cap: its IPv4 /24, IPv6 /48 or DNS domain.
-func networkKey(addr ma.Multiaddr) string {
+// NetworkKey names the network an address counts against for the diversity
+// caps: its IPv4 /24, IPv6 /48 or DNS domain. Non-global addresses (only ever
+// seen in tests and LAN setups) each count as a network of their own.
+func NetworkKey(addr ma.Multiaddr) string {
 	if len(addr) == 0 {
 		return ""
 	}
@@ -421,27 +440,34 @@ func exchangeAsOpener(s network.Stream, mine []peer.AddrInfo, allowPrivate bool)
 }
 
 // NodeListHandler returns the NodesProtocolID stream handler: it reads the
-// opener's list, passes it (validated) to learned, and replies with provide().
-// A message over the size or entry limits is a protocol error - the stream is
-// reset and nothing from it is used. learned may be nil.
-func NodeListHandler(provide func() []peer.AddrInfo, learned func(from peer.ID, infos []peer.AddrInfo), allowPrivate bool) network.StreamHandler {
-	slots := make(chan struct{}, maxConcurrentNodeExchanges)
+// opener's list, passes it (validated) to learned along with the connection it
+// came in on, and replies with provide(). A message over the size or entry
+// limits is a protocol error - the stream is reset and nothing from it is
+// used. learned may be nil.
+func NodeListHandler(provide func() []peer.AddrInfo, learned func(from network.Conn, infos []peer.AddrInfo), allowPrivate bool) network.StreamHandler {
+	return nodeListHandler(provide, learned, allowPrivate, newExchangeLimiter())
+}
+
+func nodeListHandler(provide func() []peer.AddrInfo, learned func(network.Conn, []peer.AddrInfo), allowPrivate bool, limiter *exchangeLimiter) network.StreamHandler {
 	return func(s network.Stream) {
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
+		conn := s.Conn()
+		src := exchangeSource{peer: conn.RemotePeer(), network: NetworkKey(conn.RemoteMultiaddr())}
+		if !limiter.acquire(src) {
 			_ = s.Reset()
 			return
 		}
-		_ = s.SetDeadline(time.Now().Add(nodeExchangeTimeout))
+		defer limiter.release(src)
+
+		now := time.Now()
+		_ = s.SetDeadline(now.Add(nodeExchangeTimeout))
+		_ = s.SetReadDeadline(now.Add(openerListTimeout))
 		theirs, err := readNodeList(s, allowPrivate)
 		if err != nil {
 			_ = s.Reset()
 			return
 		}
 		if learned != nil && len(theirs) > 0 {
-			learned(s.Conn().RemotePeer(), theirs)
+			learned(conn, theirs)
 		}
 		if _, err := s.Write(encodeNodeList(provide())); err != nil {
 			_ = s.Reset()
@@ -449,6 +475,58 @@ func NodeListHandler(provide func() []peer.AddrInfo, learned func(from peer.ID, 
 		}
 		_ = s.Close()
 	}
+}
+
+// exchangeSource is who an inbound exchange is charged to.
+type exchangeSource struct {
+	peer    peer.ID
+	network string // NetworkKey of the connection's remote address
+}
+
+// exchangeLimiter hands out NodeListHandler's slots: maxConcurrentNodeExchanges
+// overall, of which one peer may hold maxExchangesPerPeer and one network
+// maxExchangesPerNetwork.
+type exchangeLimiter struct {
+	mu        sync.Mutex
+	total     int
+	byPeer    map[peer.ID]int
+	byNetwork map[string]int
+}
+
+func newExchangeLimiter() *exchangeLimiter {
+	return &exchangeLimiter{byPeer: make(map[peer.ID]int), byNetwork: make(map[string]int)}
+}
+
+func (l *exchangeLimiter) acquire(src exchangeSource) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.total >= maxConcurrentNodeExchanges || l.byPeer[src.peer] >= maxExchangesPerPeer ||
+		l.byNetwork[src.network] >= maxExchangesPerNetwork {
+		return false
+	}
+	l.total++
+	l.byPeer[src.peer]++
+	l.byNetwork[src.network]++
+	return true
+}
+
+func (l *exchangeLimiter) release(src exchangeSource) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.total--
+	if l.byPeer[src.peer]--; l.byPeer[src.peer] == 0 {
+		delete(l.byPeer, src.peer)
+	}
+	if l.byNetwork[src.network]--; l.byNetwork[src.network] == 0 {
+		delete(l.byNetwork, src.network)
+	}
+}
+
+// inUse reports how many slots src's peer holds (for tests).
+func (l *exchangeLimiter) inUse(p peer.ID) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.byPeer[p]
 }
 
 // encodeNodeList renders infos for the wire, stopping before either limit
@@ -502,7 +580,8 @@ func countNodeListEntries(text string) int {
 // IsFradServer reports whether identify has shown p to run FRAD's DHT in
 // server mode - what tells a FRAD bootstrap node apart from a phone (whose DHT
 // is a client and serves no queries) or an unrelated libp2p node. Only
-// meaningful once connected: h.Connect returns after identify has finished.
+// meaningful once identify has run: h.Connect waits for that when it dials,
+// but not when a connection already existed - see AwaitSelfReport.
 func IsFradServer(h host.Host, p peer.ID) bool {
 	protos, err := h.Peerstore().SupportsProtocols(p, protocol.ID(DHTProtocolID))
 	return err == nil && len(protos) > 0
@@ -513,10 +592,11 @@ func IsFradServer(h host.Host, p peer.ID) bool {
 const selfReportedAddrsKey = "frad/self-reported-addrs"
 
 // RecordSelfReportedAddrs keeps, until ctx ends, a copy of the listen
-// addresses every peer reports about itself over identify, for
-// VerifiedNodeAddrs. The peerstore's own address book can't serve that
-// purpose: it mixes in addresses from every source, including whatever a
-// hostile node list handed to Connect.
+// addresses every peer reports about itself over identify. They are what
+// VerifyNodeAddrs tries to prove: a peer's own claims are the only ones worth
+// checking (it can only lie about itself), whereas the peerstore's address
+// book mixes in addresses from every source, including whatever a hostile
+// node list handed to Connect.
 func RecordSelfReportedAddrs(ctx context.Context, h host.Host) error {
 	sub, err := h.EventBus().Subscribe(new(event.EvtPeerIdentificationCompleted))
 	if err != nil {
@@ -540,24 +620,25 @@ func RecordSelfReportedAddrs(ctx context.Context, h host.Host) error {
 	return nil
 }
 
-// AwaitVerifiedNodeAddrs is VerifiedNodeAddrs for a peer just connected to.
-// Its identify report reaches RecordSelfReportedAddrs over the event bus a
-// moment after Connect returns; this waits for it (briefly - selfReportWait,
-// or until ctx ends), so the result doesn't depend on goroutine scheduling
-// and isn't just the one address that happened to be dialed.
-func AwaitVerifiedNodeAddrs(ctx context.Context, h host.Host, p peer.ID, allowPrivate bool) []ma.Multiaddr {
+// AwaitSelfReport waits until RecordSelfReportedAddrs has recorded p's
+// identify report - so identify has completed and IsFradServer can be asked -
+// for at most selfReportWait or until ctx ends, and reports whether it was.
+// h.Connect alone doesn't guarantee that: when a connection to p already
+// exists (e.g. one the DHT has just opened) it returns at once, possibly
+// before identify on that connection has finished.
+func AwaitSelfReport(ctx context.Context, h host.Host, p peer.ID) bool {
 	deadline := time.NewTimer(selfReportWait)
 	defer deadline.Stop()
 	for !hasSelfReport(h, p) {
 		select {
 		case <-ctx.Done():
-			return VerifiedNodeAddrs(h, p, allowPrivate)
+			return false
 		case <-deadline.C:
-			return VerifiedNodeAddrs(h, p, allowPrivate)
+			return false
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	return VerifiedNodeAddrs(h, p, allowPrivate)
+	return true
 }
 
 func hasSelfReport(h host.Host, p peer.ID) bool {
@@ -565,32 +646,153 @@ func hasSelfReport(h host.Host, p peer.ID) bool {
 	return err == nil
 }
 
-// VerifiedNodeAddrs returns the addresses of p - a peer this host is connected
-// to - that may go into a node list. They come from p itself, never from
-// whoever told us about p: anyone can claim "server X lives at Y", but only X
-// speaks for X over its own authenticated connection, so a hostile list can't
-// attach its own address, or a victim's, to a real server's identity. That
-// means what p reported over identify (see RecordSelfReportedAddrs), plus any
-// address this host has actually dialed p on.
-func VerifiedNodeAddrs(h host.Host, p peer.ID, allowPrivate bool) []ma.Multiaddr {
-	var candidates []ma.Multiaddr
-	if v, err := h.Peerstore().Get(p, selfReportedAddrsKey); err == nil {
-		// Copied, never appended to in place: the stored slice is shared.
-		reported, _ := v.([]ma.Multiaddr)
-		candidates = append(candidates, reported...)
+// SelfReportedNodeAddrs returns what p last reported about itself over
+// identify (see RecordSelfReportedAddrs), minus anything CheckNodeAddr
+// rejects. These are claims, not facts: good enough to queue p as a candidate,
+// never to list it - that takes VerifyNodeAddrs.
+func SelfReportedNodeAddrs(h host.Host, p peer.ID, allowPrivate bool) []ma.Multiaddr {
+	v, err := h.Peerstore().Get(p, selfReportedAddrsKey)
+	if err != nil {
+		return nil
 	}
-	for _, c := range h.Network().ConnsToPeer(p) {
-		if c.Stat().Direction == network.DirOutbound {
-			candidates = append(candidates, c.RemoteMultiaddr())
-		}
-	}
+	reported, _ := v.([]ma.Multiaddr)
 	var out []ma.Multiaddr
-	for _, addr := range candidates {
-		if len(out) < maxAddrsPerNode && !ma.Contains(out, addr) && CheckNodeAddr(addr, allowPrivate) == nil {
+	for _, addr := range reported {
+		if !ma.Contains(out, addr) && CheckNodeAddr(addr, allowPrivate) == nil {
 			out = append(out, addr)
 		}
 	}
 	return out
+}
+
+// VerifyNodeAddrs returns the addresses of p - a peer this host is connected
+// to - that may go into a node list: the ones p has been shown to be
+// reachable at, not merely said to be. Neither a list naming p nor p itself
+// is proof. Anyone can claim "server X lives at Y", and identify's listen
+// addresses are whatever p chooses to send - one machine could pose as
+// servers on any number of networks and walk straight past the per-network
+// diversity caps. So an address counts only once a connection to exactly that
+// address has completed a handshake authenticated as p: the remote end of an
+// outbound connection this host already has, or a dial-back to an address p
+// reported for itself. What is returned is always the IP address that
+// answered: a self-reported DNS name is resolved and its IP addresses are
+// dialed back instead (see claimedIPAddrs), so the caps always see the
+// network a server is really on, and a server announcing only a name can
+// still be verified by a peer it only ever connected to. At most
+// maxAddrsPerNode addresses are tried or returned. Waits for p's identify
+// report first (AwaitSelfReport).
+func VerifyNodeAddrs(ctx context.Context, h host.Host, p peer.ID, allowPrivate bool) []ma.Multiaddr {
+	AwaitSelfReport(ctx, h, p)
+	verified := dialedNodeAddrs(h, p, allowPrivate)
+	if len(verified) >= maxAddrsPerNode {
+		return verified
+	}
+	claims := claimedIPAddrs(ctx, h, p, allowPrivate, verified, maxAddrsPerNode-len(verified))
+	return append(verified, dialBackAll(ctx, h, p, claims)...)
+}
+
+// claimedIPAddrs returns up to n of the addresses p reported for itself
+// (SelfReportedNodeAddrs) that aren't in skip, in the order reported, with
+// each DNS name replaced by the listable IP addresses it resolves to. At most
+// maxAddrsPerNode names are looked up, all within one dialBackTimeout, so a
+// report full of names that lead nowhere costs little.
+func claimedIPAddrs(ctx context.Context, h host.Host, p peer.ID, allowPrivate bool, skip []ma.Multiaddr, n int) []ma.Multiaddr {
+	ctx, cancel := context.WithTimeout(ctx, dialBackTimeout)
+	defer cancel()
+	var out []ma.Multiaddr
+	lookups := 0
+	for _, addr := range SelfReportedNodeAddrs(h, p, allowPrivate) {
+		candidates := []ma.Multiaddr{addr}
+		if !isIPAddr(addr) {
+			if lookups == maxAddrsPerNode {
+				continue
+			}
+			lookups++
+			resolved, err := madns.DefaultResolver.Resolve(ctx, addr)
+			if err != nil {
+				continue
+			}
+			candidates = resolved
+		}
+		for _, c := range candidates {
+			if len(out) >= n {
+				return out
+			}
+			// Resolved addresses are vetted like any other: a name may point
+			// anywhere, including at a private address.
+			if isIPAddr(c) && CheckNodeAddr(c, allowPrivate) == nil && !ma.Contains(skip, c) && !ma.Contains(out, c) {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// dialedNodeAddrs returns the listable remote addresses of this host's
+// outbound connections to p: it dialed them itself, and the handshake proved
+// p is there.
+func dialedNodeAddrs(h host.Host, p peer.ID, allowPrivate bool) []ma.Multiaddr {
+	var out []ma.Multiaddr
+	for _, c := range h.Network().ConnsToPeer(p) {
+		addr := c.RemoteMultiaddr()
+		if len(out) < maxAddrsPerNode && c.Stat().Direction == network.DirOutbound &&
+			!ma.Contains(out, addr) && CheckNodeAddr(addr, allowPrivate) == nil {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+func isIPAddr(addr ma.Multiaddr) bool {
+	return len(addr) > 0 && (addr[0].Code() == ma.P_IP4 || addr[0].Code() == ma.P_IP6)
+}
+
+// dialBackAll dials back every address at once and returns, in order, those
+// that turned out to be p's.
+func dialBackAll(ctx context.Context, h host.Host, p peer.ID, addrs []ma.Multiaddr) []ma.Multiaddr {
+	ok := make([]bool, len(addrs))
+	var wg sync.WaitGroup
+	for i, addr := range addrs {
+		wg.Go(func() { ok[i] = dialBack(ctx, h, p, addr) })
+	}
+	wg.Wait()
+	var out []ma.Multiaddr
+	for i, addr := range addrs {
+		if ok[i] {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+// transportDialer is what dialBack needs from h.Network(); libp2p's swarm
+// provides it.
+type transportDialer interface {
+	TransportForDialing(ma.Multiaddr) transport.Transport
+}
+
+// dialBack reports whether a fresh connection to addr - that address alone,
+// unlike a swarm dial, which takes whichever of p's addresses answers first -
+// completes a handshake authenticated as p. The connection is closed straight
+// away. Callers vet addr first (CheckNodeAddr), standing in for the dial
+// gater, which a dial below the swarm doesn't pass through.
+func dialBack(ctx context.Context, h host.Host, p peer.ID, addr ma.Multiaddr) bool {
+	d, ok := h.Network().(transportDialer)
+	if !ok {
+		return false
+	}
+	t := d.TransportForDialing(addr)
+	if t == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, dialBackTimeout)
+	defer cancel()
+	conn, err := t.Dial(ctx, addr, p)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return conn.RemotePeer() == p
 }
 
 // PublicDialGater returns a connection gater that refuses to dial any address

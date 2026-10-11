@@ -33,7 +33,7 @@ func (s *server) refreshOfficialList(ctx context.Context) {
 			s.cfg.logf("official node list: %v", err)
 			continue
 		}
-		s.store.addCandidates(infos)
+		s.store.addCandidates(fromCurated, url, infos)
 		s.cfg.logf("official node list: %d nodes from %s", len(infos), url)
 		return
 	}

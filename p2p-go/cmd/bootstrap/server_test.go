@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 
 	p2pnode "frad.local/p2p-go/node"
@@ -98,7 +100,8 @@ func TestGossipSpreadsServersAcrossFederation(t *testing.T) {
 }
 
 // TestConnectedServersBecomeKnown: a server met any other way - here a plain
-// connection, in practice the DHT - is picked up by the next gossip round.
+// connection it opened itself, in practice the DHT - is queued by the next
+// gossip round and verified by dialing it back.
 func TestConnectedServersBecomeKnown(t *testing.T) {
 	ctx := testContext(t)
 	a := newTestServer(t, nil)
@@ -108,11 +111,88 @@ func TestConnectedServersBecomeKnown(t *testing.T) {
 	}
 	// Connect only waits for B's identify of A; A identifies B on its own time.
 	waitFor(t, ctx, "A to identify B", func() bool {
-		return p2pnode.IsFradServer(a.h, b.h.ID()) && len(p2pnode.VerifiedNodeAddrs(a.h, b.h.ID(), true)) > 0
+		return p2pnode.IsFradServer(a.h, b.h.ID()) && len(p2pnode.SelfReportedNodeAddrs(a.h, b.h.ID(), true)) > 0
 	})
 	a.gossipOnce(ctx)
 	if !a.store.isKnown(b.h.ID()) {
 		t.Fatal("A didn't record the FRAD server connected to it")
+	}
+}
+
+// TestConnectedServersQueueByWhoDialed: a server this node dialed itself
+// (in practice, through the DHT) is queued with the candidates other servers
+// named; one that only dialed in is queued with what anyone can push, so
+// connecting in can't crowd verified servers' candidates out.
+func TestConnectedServersQueueByWhoDialed(t *testing.T) {
+	ctx := testContext(t)
+	a, dialed, caller := newTestServer(t, nil), newTestServer(t, nil), newTestServer(t, nil)
+	if err := a.h.Connect(ctx, infoOf(dialed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := caller.h.Connect(ctx, infoOf(a)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "A to identify both", func() bool {
+		for _, p := range []peer.ID{dialed.h.ID(), caller.h.ID()} {
+			if !p2pnode.IsFradServer(a.h, p) || len(p2pnode.SelfReportedNodeAddrs(a.h, p, true)) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+	a.queueConnectedServers()
+	if !a.store.queuedIn(fromServers, dialed.h.ID()) {
+		t.Error("a server A dialed itself wasn't queued with the servers' candidates")
+	}
+	if a.store.queuedIn(fromServers, caller.h.ID()) || !a.store.queuedIn(fromPushed, caller.h.ID()) {
+		t.Error("a server that only dialed in must queue with the pushed candidates")
+	}
+}
+
+// queuedIn reports whether id waits in src's candidate queue.
+func (st *nodeStore) queuedIn(src candidateSource, id peer.ID) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return slices.ContainsFunc(st.candidates[src].infos, func(c peer.AddrInfo) bool { return c.ID == id })
+}
+
+// TestSelfReportedAddrsAreNotTakenOnTrust is the attack the dial-back exists
+// for: a real FRAD server (it runs the DHT) that connects in and claims to
+// live at addresses it doesn't - in the real world, one per /24, to pass as
+// many independent servers. None of them answer as it, so it isn't listed.
+func TestSelfReportedAddrsAreNotTakenOnTrust(t *testing.T) {
+	ctx := testContext(t)
+	a := newTestServer(t, nil)
+	claimed := addrs("/ip4/127.0.0.1/tcp/1", "/ip4/127.0.0.2/tcp/1", "/ip4/127.0.0.3/tcp/1")
+	sybil, err := libp2p.New(libp2p.NoListenAddrs,
+		libp2p.AddrsFactory(func([]ma.Multiaddr) []ma.Multiaddr { return claimed }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sybil.Close()
+	kad, err := dht.New(sybil, dht.ProtocolPrefix(protocol.ID(p2pnode.ProtocolPrefix)), dht.Mode(dht.ModeServer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer kad.Close()
+	if err := sybil.Connect(ctx, infoOf(a)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "A to identify the sybil", func() bool {
+		return p2pnode.IsFradServer(a.h, sybil.ID()) && len(p2pnode.SelfReportedNodeAddrs(a.h, sybil.ID(), true)) > 0
+	})
+
+	a.gossipOnce(ctx)
+	if a.store.isKnown(sybil.ID()) {
+		t.Fatalf("A vouches for a server at addresses nobody reached it at: %v", a.store.alive())
+	}
+	for _, info := range a.sharedNodes() {
+		if info.ID == sybil.ID() {
+			t.Fatalf("A shares the sybil's claimed addresses: %v", info)
+		}
+	}
+	if a.store.isCandidate(sybil.ID()) {
+		t.Fatal("a failed check must drop the candidate")
 	}
 }
 
@@ -132,7 +212,7 @@ func TestGossipOnlyVerifiesFradServers(t *testing.T) {
 		func() []peer.AddrInfo { return []peer.AddrInfo{impostorInfo} }, nil, true))
 	unreachable := peer.AddrInfo{ID: newTestServer(t, nil).h.ID(), Addrs: []ma.Multiaddr{ma.StringCast("/ip4/127.0.0.1/tcp/1")}}
 
-	a.store.addCandidates([]peer.AddrInfo{impostorInfo, unreachable})
+	a.store.addCandidates(fromPushed, "test", []peer.AddrInfo{impostorInfo, unreachable})
 	a.gossipOnce(ctx)
 	for _, id := range []peer.ID{impostor.ID(), unreachable.ID} {
 		if a.store.isKnown(id) || a.store.isCandidate(id) {

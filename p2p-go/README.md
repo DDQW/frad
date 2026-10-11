@@ -58,6 +58,10 @@ their configured bootstrap nodes - and remembers what the asker sent.
   most 64 entries (`MaxNodeListEntries`) and 16 KiB per message, 10 s per
   exchange. Going over a limit is a protocol error (the stream is reset and
   nothing from it is used). Lines starting with `#` are comments.
+- Serving it: at most 16 exchanges at once, of which one peer may hold 2 and
+  one network (as below) 4, and at most 5 s to wait for the opener's list - a
+  stream that never finishes gives its slot back early, and one peer, or one
+  machine cycling peer ids, can't lock everyone else out.
 - Validation (`ParseNodeList`, exported to Kotlin as `ValidateNodeList`): an IP
   or DNS name (`/dns`, `/dns4`, `/dns6`) followed by `/tcp/<port>` or
   `/udp/<port>/quic-v1`. Rejected: loopback, private (RFC 1918), CGNAT
@@ -78,19 +82,37 @@ their configured bootstrap nodes - and remembers what the asker sent.
   every server verified since, whenever its routing table runs low.
 - Known nodes: other servers this node has verified, persisted with when each
   was last seen alive in `-nodes-file` (default `nodes.txt` next to the
-  identity key) and dropped after 7 days unseen.
-- Candidates: addresses heard from the official list (fetched at start and
-  every 6 hours from `-official-list-url`, mirrors tried in order, 10 s timeout,
-  64 KiB cap), from other servers' lists and from whatever apps push. A
-  candidate becomes known only after this node checks it itself.
-- Every 10 minutes (first round 30 s after start) a gossip round counts every
-  connected FRAD server as alive, then picks up to 8 known nodes and
-  candidates at random, connects, and keeps a node only if identify shows it
-  runs `/frad/kad/1.0.0` - FRAD's DHT in server mode, which no phone and no
-  unrelated libp2p node does - and swaps lists with it.
-- The addresses a server vouches for are the ones the other server reported
-  about itself over identify (or the one actually dialed), never what a third
-  party claimed: "server X lives at Y" can only be said by X.
+  identity key) and dropped after 7 days unseen. At most 512, and at most 2
+  per network (counted on their proven addresses, see below; the ones
+  already known keep their places), so peer ids on one machine can't fill
+  them - or the 64 entries shared with apps.
+- Candidates: addresses heard from elsewhere, in three queues of 128 by
+  source: `-peer` and the official list (fetched at start and every 6 hours
+  from `-official-list-url`, mirrors tried in order, 10 s timeout, 64 KiB
+  cap); verified servers' lists and servers this node dialed itself (in
+  practice through the DHT); and everything anyone can send - lists apps and
+  unverified peers push, and servers that connected in. Outside the first
+  queue one network may hold 16 entries of a queue, its latest list
+  replacing its earlier ones, and every round draws from all three in turn,
+  so pushing junk as fast as one likes can't keep the official list or
+  other servers' lists from being checked. A candidate becomes known only
+  after this node checks it itself.
+- Every 10 minutes (first round 30 s after start) a gossip round queues every
+  connected FRAD server it doesn't know yet as a candidate, then picks up to
+  8 known nodes and candidates at random, connects, and keeps a node only if
+  identify shows it runs `/frad/kad/1.0.0` - FRAD's DHT in server mode, which
+  no phone and no unrelated libp2p node does - and swaps lists with it.
+- A server vouches for another only at addresses shown to reach it
+  (`VerifyNodeAddrs`): the remote address of a connection it dialed itself,
+  or an address the other server reported for itself over identify that
+  answers a fresh dial-back with a handshake as that peer id. A third party's
+  "server X lives at Y" is no proof, and neither is X's own: one machine
+  could claim addresses in any number of networks and pass as that many
+  servers. It is always the IP address that answered that gets listed: a
+  self-reported DNS name is resolved and its IPs are dialed back, so the
+  caps see the network a server is really on. A server that only ever
+  connected in is checked like any candidate, never vouched for on the
+  strength of the connection.
 - Node lists are untrusted input, so a server never dials a private address
   (`PublicDialGater`, which sees DNS names already resolved) - no probing its
   own LAN or cloud network on a hostile list's say-so.
@@ -101,7 +123,10 @@ node, `ExchangeNodesWithPeer` with any peer (e.g. a chat partner), and
 `TakeLearnedNodes` hands over what others pushed. Everything returned is
 validated and capped, but still unverified - the app should treat it as
 candidates. (Wiring these into `WideRangeChatController`/Profile storage is
-app-side work; `WideRangeNode` exposes them.)
+app-side work; `WideRangeNode` exposes them.) `Config.BootstrapPeers` takes a
+copy of the official `nodes.txt` as is: blank lines, `#` comments and lines
+that don't parse are skipped, and only a list without a single usable entry
+is an error.
 
 **The official list** in [`nodes/`](../nodes/README.md) is one more source,
 not an authority: the crawler lists servers seen alive in 3 consecutive runs,
@@ -204,15 +229,22 @@ Everything runs on loopback, with real libp2p hosts:
   via a bootstrap node; a chat stream over a relayed (limited) connection;
   relay-only mode never connecting directly; a default-mode host reserving a
   relay slot on its own; the interface-address workaround; node-list
-  validation, merging and wire limits; app-to-app and app-to-server
-  exchanges; address verification and the dial gater.
+  validation, merging and wire limits; the exchange handler's per-peer
+  limits; app-to-app and app-to-server exchanges; a commented bootstrap
+  list; address verification (claimed addresses that don't answer, a
+  dial-back reaching some other peer id, a server announcing only a DNS
+  name) and the dial gater.
 - `cmd/bootstrap`: federation via `-peer` (including a shared DHT), a server
-  learned through gossip being verified and persisted, non-servers and
-  unreachable candidates being dropped, the official list (with mirror
-  fallback and size cap), `-announce`, and the store's expiry and caps.
-- `cmd/nodecrawl`: a three-run crawl that lists exactly the real servers,
-  byte-identical output when nothing changes, delisting after two misses,
-  the contact budget, bans and pins - plus the selection rules on their own.
+  learned through gossip being verified and persisted, non-servers,
+  unreachable candidates and a server claiming addresses it isn't at being
+  dropped, connected servers queued by who dialed whom, the official list
+  (with mirror fallback and size cap), `-announce`, and the store's expiry,
+  per-network caps and candidate queues.
+- `cmd/nodecrawl`: a three-run crawl that lists exactly the real servers at
+  the addresses they answer on, byte-identical output when nothing changes,
+  delisting after two misses, the contact budget, level limit and overall
+  timeout, the budget shared between networks, bans and pins - plus the
+  selection, seeding and state-trimming rules on their own.
 
 What they do **not** prove: behavior across the real internet and through
 real NAT/hole punching — that needs two physical devices and a real,
