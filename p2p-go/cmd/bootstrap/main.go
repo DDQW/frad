@@ -39,9 +39,12 @@ import (
 
 // defaultOfficialListURLs are mirrors of nodes/nodes.txt in this repository,
 // tried in order: jsDelivr keeps serving the file if raw.githubusercontent.com
-// is blocked or down.
+// is blocked or down, and the Codeberg and GitLab copies (pushed by the
+// crawler workflow) outlive GitHub altogether.
 const defaultOfficialListURLs = "https://raw.githubusercontent.com/DDQW/frad/master/nodes/nodes.txt," +
-	"https://cdn.jsdelivr.net/gh/DDQW/frad@master/nodes/nodes.txt"
+	"https://cdn.jsdelivr.net/gh/DDQW/frad@master/nodes/nodes.txt," +
+	"https://codeberg.org/DDQW/frad-nodes/raw/branch/main/nodes.txt," +
+	"https://gitlab.com/DDQW/frad-nodes/-/raw/main/nodes.txt"
 
 func main() {
 	cfg, err := parseFlags(os.Args[1:])

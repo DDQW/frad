@@ -110,10 +110,13 @@ class NodeDirectory(
     }
 
     companion object {
-        /** The same file through two independent CDNs - see nodes/README.md. */
+        /** The same file through two CDNs, then copies outside GitHub (Codeberg, GitLab) that
+         *  outlive this repository - see nodes/README.md. Tried in order, first answer wins. */
         val OFFICIAL_LIST_URLS = listOf(
             "https://raw.githubusercontent.com/DDQW/frad/master/nodes/nodes.txt",
             "https://cdn.jsdelivr.net/gh/DDQW/frad@master/nodes/nodes.txt",
+            "https://codeberg.org/DDQW/frad-nodes/raw/branch/main/nodes.txt",
+            "https://gitlab.com/DDQW/frad-nodes/-/raw/main/nodes.txt",
         )
         const val OFFICIAL_REFRESH_MILLIS = 6L * 60 * 60 * 1000
         const val LEARNED_TTL_MILLIS = 7L * 24 * 60 * 60 * 1000

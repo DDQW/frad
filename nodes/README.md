@@ -18,14 +18,41 @@ for newcomers.
 
 ## Where to fetch it
 
-The same file, served by two independent CDNs:
+The same file, served by two CDNs and copied to two places outside GitHub:
 
 - https://raw.githubusercontent.com/DDQW/frad/master/nodes/nodes.txt
 - https://cdn.jsdelivr.net/gh/DDQW/frad@master/nodes/nodes.txt
+- https://codeberg.org/DDQW/frad-nodes/raw/branch/main/nodes.txt
+- https://gitlab.com/DDQW/frad-nodes/-/raw/main/nodes.txt
 
-`cmd/bootstrap` tries them in that order (`-official-list-url`). The format is
-one multiaddr per line, each ending in `/p2p/<peerid>`; lines starting with `#`
-are comments.
+The app and `cmd/bootstrap` try them in that order (`-official-list-url`);
+the first one that answers with a node list wins.
+
+### Mirrors
+
+After every crawl, [`nodes-crawl.yml`](../.github/workflows/nodes-crawl.yml)
+pushes `nodes.txt` to a repository `frad-nodes` on Codeberg and on GitLab,
+so the list stays reachable even if this repository or GitHub is gone. To
+switch them on, once:
+
+1. Create an empty public repository `DDQW/frad-nodes` on
+   [Codeberg](https://codeberg.org) and on [GitLab](https://gitlab.com)
+   (another owner/name works too: set the repository variable
+   `NODES_MIRROR_REPO`, and change the URLs above in
+   `app/.../NodeDirectory.kt` and `p2p-go/cmd/bootstrap/main.go`).
+2. Create an access token with write access to it on each site
+   (Codeberg: *Settings → Applications*, scope `write:repository`; GitLab:
+   a project access token with `write_repository`).
+3. Add them to this repository as Actions secrets `CODEBERG_TOKEN` and
+   `GITLAB_TOKEN`.
+
+Without a token the matching mirror step is skipped. Anyone can run a further
+mirror the same way: the file is plain text and needs no signature, because
+every address in it is only ever a candidate that each phone and server
+verifies by connecting.
+
+The format is one multiaddr per line, each ending in `/p2p/<peerid>`; lines
+starting with `#` are comments.
 
 ## Who gets listed
 

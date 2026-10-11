@@ -366,7 +366,7 @@ func TestParseFlags(t *testing.T) {
 	if len(cfg.federation) != 1 || len(cfg.federation[0].Addrs) != 2 {
 		t.Errorf("federation %v, want one peer with both addresses", cfg.federation)
 	}
-	if len(cfg.announce) != 1 || len(cfg.officialURLs) != 2 || len(cfg.listenAddrs) != 4 {
+	if len(cfg.announce) != 1 || len(cfg.officialURLs) != 4 || len(cfg.listenAddrs) != 4 {
 		t.Errorf("announce %v, official %v, listen %v", cfg.announce, cfg.officialURLs, cfg.listenAddrs)
 	}
 	if !slices.Contains(cfg.listenAddrs, "/ip6/::/udp/4001/quic-v1") {
