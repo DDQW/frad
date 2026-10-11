@@ -280,6 +280,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         get() = profile.crashReports
         set(value) { profile.crashReports = value }
 
+    var matchFilter: app.frad.chat.profile.MatchFilter
+        get() = profile.matchFilter
+        set(value) { profile.matchFilter = value }
+
     var usePublicNodes: Boolean
         get() = profile.usePublicNodes
         set(value) { profile.usePublicNodes = value }
@@ -396,6 +400,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun requestRandomChat() { activeController?.requestRandomChat() }
     fun chatWithContact(peerId: String) { activeController?.requestContactChat(peerId) }
+    fun answerChatRequest(accept: Boolean) { activeController?.answerChatRequest(accept) }
+    fun setDisappearTimer(seconds: Long) { activeController?.setDisappearTimer(seconds) }
+
+    /** Leaves the open chat (or declines the request on screen) and asks someone else right
+     *  away - both run in order on the controller's serial dispatcher. */
+    fun nextChat() {
+        val controller = activeController ?: return
+        if ((state.value as? ChatUiState.Chatting)?.acceptance == app.frad.chat.chat.Acceptance.THEY_ASK) {
+            controller.answerChatRequest(false)
+        } else {
+            controller.endActiveConnection(getApplication<Application>().getString(R.string.misc_end_reason_you_left))
+        }
+        controller.requestRandomChat()
+    }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
     fun notifyTyping() { activeController?.notifyTyping() }
     fun endChat() { activeController?.endActiveConnection(getApplication<Application>().getString(R.string.misc_end_reason_you_left)) }

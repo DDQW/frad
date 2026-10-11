@@ -336,4 +336,41 @@
     <string name="servers_source_yours">Deiner</string>
     <string name="servers_source_official">Offizielle Liste</string>
     <string name="servers_source_learned">Weitererzählt</string>
+    <string name="ctl_ended_they_declined">die Person wollte diesmal nicht chatten</string>
+    <string name="ctl_ended_we_declined">du hast den Chat abgelehnt</string>
+    <string name="ctl_ended_no_answer">auf die Chat-Anfrage kam rechtzeitig keine Antwort</string>
+    <string name="ctl_ended_filtered">nicht, wen du treffen willst (siehe „Wen treffen“ im Profil)</string>
+    <string name="chat_request_incoming">%1$s möchte chatten</string>
+    <string name="chat_request_incoming_hint">Schau dir erst das Profil an. Es wird nichts gesendet, bevor du annimmst.</string>
+    <string name="chat_request_accept">Annehmen</string>
+    <string name="chat_request_decline">Ablehnen</string>
+    <string name="chat_request_waiting">Warte, bis %1$s annimmt…</string>
+    <string name="chat_next">Nächste Person</string>
+    <string name="chat_disappear_menu">Selbstlöschende Nachrichten</string>
+    <string name="chat_disappear_explainer">Gilt für euch beide, für Nachrichten ab jetzt - auf beiden Handys werden sie nach Ablauf gelöscht, auch in gespeicherten Chats. Abschreiben kann man sie vorher trotzdem.</string>
+    <string name="chat_disappear_off">Aus</string>
+    <string name="chat_disappear_on">Nachrichten verschwinden nach %1$s</string>
+    <string name="match_title">Wen treffen</string>
+    <string name="match_explainer">Chats mit Fremden außerhalb davon öffnen sich gar nicht erst - eingehende werden abgelehnt. Wer sein Alter nicht zeigt, gilt als passend. Gespeicherte Kontakte kommen immer durch.</string>
+    <string name="match_everyone">Alle</string>
+    <string name="match_women">Frauen</string>
+    <string name="match_men">Männer</string>
+    <string name="match_any_age">Jedes Alter</string>
+    <string name="match_age_from">Ab %1$d</string>
+    <string name="match_age_range">%1$d bis %2$d</string>
+    <plurals name="chat_disappear_minutes">
+        <item quantity="one">%1$d Minute</item>
+        <item quantity="other">%1$d Minuten</item>
+    </plurals>
+    <plurals name="chat_disappear_hours">
+        <item quantity="one">%1$d Stunde</item>
+        <item quantity="other">%1$d Stunden</item>
+    </plurals>
+    <plurals name="chat_disappear_days">
+        <item quantity="one">%1$d Tag</item>
+        <item quantity="other">%1$d Tagen</item>
+    </plurals>
+    <string name="ctl_request_channel_name">Chat-Anfragen</string>
+    <string name="ctl_request_notification_title">%1$s möchte chatten</string>
+    <string name="ctl_request_notification_text">Öffne FRAD zum Annehmen oder Ablehnen - die Anfrage endet nach einer Minute.</string>
 </resources>

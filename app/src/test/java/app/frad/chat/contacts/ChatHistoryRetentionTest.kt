@@ -24,4 +24,15 @@ class ChatHistoryRetentionTest {
         val messages = (1L..5L).map(::message)
         assertEquals((4L..5L).map(::message), ChatHistoryRetention.apply(messages, cutoffMillis = null, maxMessages = 2))
     }
+
+    @Test
+    fun `disappeared messages are dropped`() {
+        val gone = message(1).copy(expiresAtMillis = 100)
+        val staying = message(2).copy(expiresAtMillis = 300)
+        val forever = message(3)
+        assertEquals(
+            listOf(staying, forever),
+            ChatHistoryRetention.apply(listOf(gone, staying, forever), cutoffMillis = null, maxMessages = 10, nowMillis = 200),
+        )
+    }
 }

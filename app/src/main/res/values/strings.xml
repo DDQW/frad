@@ -337,4 +337,41 @@
     <string name="servers_source_yours">Yours</string>
     <string name="servers_source_official">Official list</string>
     <string name="servers_source_learned">Heard of</string>
+    <string name="ctl_ended_they_declined">they didn\'t want to chat this time</string>
+    <string name="ctl_ended_we_declined">you declined the chat</string>
+    <string name="ctl_ended_no_answer">nobody answered the chat request in time</string>
+    <string name="ctl_ended_filtered">not who you want to meet (see Who to meet in your profile)</string>
+    <string name="chat_request_incoming">%1$s would like to chat</string>
+    <string name="chat_request_incoming_hint">Have a look at their profile first. Nothing is sent until you accept.</string>
+    <string name="chat_request_accept">Accept</string>
+    <string name="chat_request_decline">Decline</string>
+    <string name="chat_request_waiting">Waiting for %1$s to accept…</string>
+    <string name="chat_next">Next person</string>
+    <string name="chat_disappear_menu">Disappearing messages</string>
+    <string name="chat_disappear_explainer">Applies to both of you, for messages sent from now on - on both phones they\'re deleted once the time is up, including saved chats. The other person could still copy a message before then.</string>
+    <string name="chat_disappear_off">Off</string>
+    <string name="chat_disappear_on">Messages disappear after %1$s</string>
+    <string name="match_title">Who to meet</string>
+    <string name="match_explainer">Chats with strangers outside this never open - incoming ones are declined. People who don\'t share their age count as a match. Saved contacts always get through.</string>
+    <string name="match_everyone">Everyone</string>
+    <string name="match_women">Women</string>
+    <string name="match_men">Men</string>
+    <string name="match_any_age">Any age</string>
+    <string name="match_age_from">From %1$d</string>
+    <string name="match_age_range">%1$d to %2$d</string>
+    <plurals name="chat_disappear_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <plurals name="chat_disappear_hours">
+        <item quantity="one">%1$d hour</item>
+        <item quantity="other">%1$d hours</item>
+    </plurals>
+    <plurals name="chat_disappear_days">
+        <item quantity="one">%1$d day</item>
+        <item quantity="other">%1$d days</item>
+    </plurals>
+    <string name="ctl_request_channel_name">Chat requests</string>
+    <string name="ctl_request_notification_title">%1$s would like to chat</string>
+    <string name="ctl_request_notification_text">Open FRAD to accept or decline - the request ends after a minute.</string>
 </resources>

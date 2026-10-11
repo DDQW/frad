@@ -52,4 +52,10 @@ class ChatMessageJsonTest {
 
         assertEquals(listOf(ChatMessage(fromMe = true, text = "hi from M2", atMillis = 500L, kind = MessageKind.TEXT)), decoded)
     }
+
+    @Test
+    fun `the expiry of a disappearing message survives a round trip`() {
+        val messages = listOf(ChatMessage(fromMe = false, text = "bye soon", atMillis = 10, expiresAtMillis = 3_600_010))
+        assertEquals(messages, ChatMessageJson.decode(ChatMessageJson.encode(messages)))
+    }
 }

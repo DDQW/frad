@@ -18,6 +18,9 @@ class ChatEnvelopeJsonTest {
             ChatEnvelope.Text("hello"),
             ChatEnvelope.Text("with receipt", id = "m-1"),
             ChatEnvelope.Ack("m-1"),
+            ChatEnvelope.ChatAccept,
+            ChatEnvelope.ChatDecline,
+            ChatEnvelope.DisappearTimer(3600),
             ChatEnvelope.Typing,
             ChatEnvelope.WfdOffer(offer, networkName = "DIRECT-ab", passphrase = "secret"),
             ChatEnvelope.WideOffer(offer),
@@ -85,5 +88,13 @@ class ChatEnvelopeJsonTest {
         assertEquals(ChatEnvelope.Unknown("file-reply"), ChatEnvelopeJson.decode("""{"k":"file-reply","tid":""}"""))
         assertEquals(ChatEnvelope.Unknown("file-reply"), ChatEnvelopeJson.decode("""{"k":"file-reply","tid":"abc"}"""))
         assertEquals(ChatEnvelope.Unknown("file-req"), ChatEnvelopeJson.decode("""{"k":"file-req","tid":"abc","name":"x","mime":"y","size":-1}"""))
+    }
+
+    @Test
+    fun `a disappear timer outside 0 to 7 days is ignored`() {
+        assertEquals(ChatEnvelope.Unknown("timer"), ChatEnvelopeJson.decode("""{"k":"timer","s":-5}"""))
+        assertEquals(ChatEnvelope.Unknown("timer"), ChatEnvelopeJson.decode("""{"k":"timer","s":99999999}"""))
+        assertEquals(ChatEnvelope.Unknown("timer"), ChatEnvelopeJson.decode("""{"k":"timer"}"""))
+        assertEquals(ChatEnvelope.DisappearTimer(0), ChatEnvelopeJson.decode("""{"k":"timer","s":0}"""))
     }
 }

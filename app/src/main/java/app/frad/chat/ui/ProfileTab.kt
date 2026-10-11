@@ -442,6 +442,8 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 )
             }
             Spacer(Modifier.height(16.dp))
+            MatchFilterSettings(viewModel)
+            Spacer(Modifier.height(16.dp))
             Text(stringResource(R.string.profile_retention_title), fontWeight = FontWeight.SemiBold)
             Text(
                 stringResource(R.string.profile_retention_explainer),

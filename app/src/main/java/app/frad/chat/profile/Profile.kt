@@ -132,6 +132,21 @@ class Profile(context: Context) {
         get() = prefs.getInt(KEY_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE }
         set(value) { prefs.edit().putInt(KEY_AGE, value?.coerceIn(MIN_AGE, MAX_AGE) ?: -1).apply() }
 
+    /** Who to be matched with - see [MatchFilter]. Ages are kept within [MIN_AGE]..[MAX_AGE]. */
+    var matchFilter: MatchFilter
+        get() = MatchFilter(
+            minAge = prefs.getInt(KEY_MATCH_MIN_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE },
+            maxAge = prefs.getInt(KEY_MATCH_MAX_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE },
+            gender = prefs.getString(KEY_MATCH_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() },
+        )
+        set(value) {
+            prefs.edit()
+                .putInt(KEY_MATCH_MIN_AGE, value.minAge?.coerceIn(MIN_AGE, MAX_AGE) ?: -1)
+                .putInt(KEY_MATCH_MAX_AGE, value.maxAge?.coerceIn(MIN_AGE, MAX_AGE) ?: -1)
+                .putString(KEY_MATCH_GENDER, value.gender?.name)
+                .apply()
+        }
+
     /** Whether matches see your [age]; the age group ([isAdult]) is always exchanged regardless. */
     var shareAge: Boolean
         get() = prefs.getBoolean(KEY_SHARE_AGE, true)
@@ -179,6 +194,9 @@ class Profile(context: Context) {
         private const val KEY_SHARE_AGE = "share_age"
         private const val KEY_ONBOARDED = "onboarded"
         private const val KEY_BIO = "bio"
+        private const val KEY_MATCH_MIN_AGE = "match_min_age"
+        private const val KEY_MATCH_MAX_AGE = "match_max_age"
+        private const val KEY_MATCH_GENDER = "match_gender"
         private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
         const val MAX_BIO_LENGTH = 140

@@ -39,6 +39,12 @@ interface ChatController {
     /** Stops the file transfer - or the request for one - that [transferStatus] describes. */
     fun cancelTransfer()
 
+    /** The user's answer to a chat request ([ChatUiState.Chatting.acceptance] == THEY_ASK). */
+    fun answerChatRequest(accept: Boolean)
+
+    /** Messages in the open chat disappear [seconds] after they're sent, on both sides; 0: off. */
+    fun setDisappearTimer(seconds: Long)
+
     /** Asks the peer to swap profile photos (see [ChatEnvelope.PhotoRequest]). */
     fun requestPhotoSwap()
 

@@ -170,6 +170,11 @@ private fun RadarStateContent(state: ChatUiState, viewModel: ChatViewModel) {
                     viewModel.saveContact(current.remotePeerId, current.remotePseudonym)
                     saved = true
                 },
+                acceptance = current.acceptance,
+                onAnswerChatRequest = { viewModel.answerChatRequest(it) },
+                onNext = { viewModel.nextChat() },
+                disappearSeconds = current.disappearSeconds,
+                onSetDisappear = { viewModel.setDisappearTimer(it) },
             )
         }
         // Only stays on screen while not browsing (e.g. wide-range couldn't start); while browsing,

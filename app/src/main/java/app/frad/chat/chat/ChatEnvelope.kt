@@ -55,6 +55,16 @@ sealed interface ChatEnvelope {
      *  in every chat, so server lists spread without any central place. */
     data class Nodes(val addresses: List<String>) : ChatEnvelope
 
+    /** "Yes, let's chat" - the receiver of a chat request agreed (see [ChatUiState.Chatting.acceptance]). */
+    data object ChatAccept : ChatEnvelope
+
+    /** "No thanks" - the receiver of a chat request declined it; the chat ends. */
+    data object ChatDecline : ChatEnvelope
+
+    /** Messages from now on disappear [seconds] after they were sent (0: they stay) - either side
+     *  may set it, and both apply it. */
+    data class DisappearTimer(val seconds: Long) : ChatEnvelope
+
     /** A kind this version doesn't know. Ignored rather than treated as an error, so a newer
      *  peer adding a message type (typing indicator, receipts, ...) doesn't break older ones. */
     data class Unknown(val kind: String) : ChatEnvelope
@@ -72,6 +82,10 @@ object ChatEnvelopeJson {
     private const val KIND_PHOTO_REQUEST = "photo-req"
     private const val KIND_PHOTO_REPLY = "photo"
     private const val KIND_NODES = "nodes"
+    private const val KIND_ACCEPT = "accept"
+    private const val KIND_DECLINE = "decline"
+    private const val KIND_TIMER = "timer"
+    const val MAX_DISAPPEAR_SECONDS = 7L * 24 * 60 * 60
     private const val MAX_NODES_PER_ENVELOPE = 32
     private const val MAX_NODE_ADDRESS_CHARS = 300
 
@@ -88,6 +102,9 @@ object ChatEnvelopeJson {
         ChatEnvelope.PhotoRequest -> JSONObject().put("k", KIND_PHOTO_REQUEST)
         is ChatEnvelope.PhotoReply -> JSONObject().put("k", KIND_PHOTO_REPLY).also { obj -> envelope.photo?.let { obj.put("p", it) } }
         is ChatEnvelope.Nodes -> JSONObject().put("k", KIND_NODES).put("a", org.json.JSONArray(envelope.addresses.take(MAX_NODES_PER_ENVELOPE)))
+        ChatEnvelope.ChatAccept -> JSONObject().put("k", KIND_ACCEPT)
+        ChatEnvelope.ChatDecline -> JSONObject().put("k", KIND_DECLINE)
+        is ChatEnvelope.DisappearTimer -> JSONObject().put("k", KIND_TIMER).put("s", envelope.seconds)
         is ChatEnvelope.Unknown -> JSONObject().put("k", envelope.kind)
     }.toString()
 
@@ -120,6 +137,10 @@ object ChatEnvelopeJson {
                 ChatEnvelope.Nodes(addresses)
             }
             KIND_PHOTO_REQUEST -> ChatEnvelope.PhotoRequest
+            KIND_ACCEPT -> ChatEnvelope.ChatAccept
+            KIND_DECLINE -> ChatEnvelope.ChatDecline
+            KIND_TIMER -> obj.optLong("s", -1).takeIf { it in 0..MAX_DISAPPEAR_SECONDS }
+                ?.let { ChatEnvelope.DisappearTimer(it) } ?: ChatEnvelope.Unknown(kind)
             KIND_PHOTO_REPLY -> ChatEnvelope.PhotoReply(obj.optString("p", "").ifEmpty { null })
             else -> ChatEnvelope.Unknown(kind)
         }

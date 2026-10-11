@@ -18,8 +18,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import app.frad.chat.MainActivity
 import app.frad.chat.R
+import app.frad.chat.chat.Acceptance
 import app.frad.chat.chat.ChatController
 import app.frad.chat.chat.ChatUiState
+import app.frad.chat.chat.OpenChat
 import app.frad.chat.crypto.Identity
 import app.frad.chat.profile.Profile
 
@@ -103,8 +105,37 @@ class LocalBleService : Service() {
         if (notificationUpdates != null) return
         val manager = getSystemService(NotificationManager::class.java)
         notificationUpdates = serviceScope.launch {
-            controller.state.collect { state -> manager.notify(NOTIFICATION_ID, buildNotification(state)) }
+            controller.state.collect { state ->
+                manager.notify(NOTIFICATION_ID, buildNotification(state))
+                notifyChatRequest(manager, state)
+            }
         }
+    }
+
+    /** Someone asks to chat while FRAD isn't on screen: a heads-up, since the request ends
+     *  unanswered after a minute (OpenChat.ACCEPT_TIMEOUT_MILLIS). Gone once it's answered. */
+    private fun notifyChatRequest(manager: NotificationManager, state: ChatUiState) {
+        val request = (state as? ChatUiState.Chatting)?.takeIf { it.acceptance == Acceptance.THEY_ASK }
+        if (request == null || controller.isUiVisible) {
+            manager.cancel(REQUEST_NOTIFICATION_ID)
+            return
+        }
+        manager.createNotificationChannel(
+            NotificationChannel(REQUEST_CHANNEL_ID, getString(R.string.ctl_request_channel_name), NotificationManager.IMPORTANCE_HIGH),
+        )
+        val openApp = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), FLAG_IMMEDIATE_OR_UPDATE)
+        val notification = NotificationCompat.Builder(this, REQUEST_CHANNEL_ID)
+            .setContentTitle(getString(R.string.ctl_request_notification_title, Profile.displayName(request.remotePseudonym, request.remotePeerId)))
+            .setContentText(getString(R.string.ctl_request_notification_text))
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(openApp)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setTimeoutAfter(OpenChat.ACCEPT_TIMEOUT_MILLIS)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        runCatching { manager.notify(REQUEST_NOTIFICATION_ID, notification) } // no POST_NOTIFICATIONS: nothing to show
     }
 
     private fun buildNotification(state: ChatUiState): Notification {
@@ -150,6 +181,8 @@ class LocalBleService : Service() {
         private const val ACTION_TURN_OFF = "app.frad.chat.action.TURN_OFF"
         private const val CHANNEL_ID = "frad_visibility"
         private const val NOTIFICATION_ID = 1
+        private const val REQUEST_CHANNEL_ID = "frad_chat_requests"
+        private const val REQUEST_NOTIFICATION_ID = 2
 
         /** Immutable, and refreshed in place when the notification is rebuilt. */
         private const val FLAG_IMMEDIATE_OR_UPDATE = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

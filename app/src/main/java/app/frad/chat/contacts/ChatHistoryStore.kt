@@ -137,8 +137,18 @@ class ChatHistoryStore(context: Context) {
 
 /** Which messages a transcript keeps - pure, so it's testable without a device. */
 internal object ChatHistoryRetention {
-    fun apply(messages: List<ChatMessage>, cutoffMillis: Long?, maxMessages: Int): List<ChatMessage> {
-        val fresh = if (cutoffMillis == null) messages else messages.filter { it.atMillis >= cutoffMillis }
+    /** Drops what's older than [cutoffMillis], what has disappeared by [nowMillis] (see
+     *  [ChatMessage.expiresAtMillis]), and all but the last [maxMessages]. */
+    fun apply(
+        messages: List<ChatMessage>,
+        cutoffMillis: Long?,
+        maxMessages: Int,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): List<ChatMessage> {
+        val fresh = messages.filter { message ->
+            (cutoffMillis == null || message.atMillis >= cutoffMillis) &&
+                (message.expiresAtMillis == null || message.expiresAtMillis > nowMillis)
+        }
         return if (fresh.size > maxMessages) fresh.takeLast(maxMessages) else fresh
     }
 }
@@ -156,6 +166,7 @@ internal object ChatMessageJson {
                 .put("kind", message.kind.name)
             if (message.id != null) obj.put("id", message.id)
             if (message.delivered) obj.put("delivered", true)
+            if (message.expiresAtMillis != null) obj.put("expiresAt", message.expiresAtMillis)
             if (message.kind == MessageKind.FILE) {
                 obj.put("fileName", message.fileName)
                     .put("mimeType", message.mimeType)
@@ -184,6 +195,7 @@ internal object ChatMessageJson {
                 localPath = if (obj.has("localPath")) obj.getString("localPath") else null,
                 id = if (obj.has("id")) obj.getString("id") else null,
                 delivered = obj.optBoolean("delivered", false),
+                expiresAtMillis = if (obj.has("expiresAt")) obj.getLong("expiresAt") else null,
             )
         }
     }

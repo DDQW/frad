@@ -115,6 +115,8 @@ class WideRangeChatController(
             canReceiveFile = { _transferStatus.value == null },
             ownPhoto = { ProfilePhoto.bytesOrNull(context) },
             photoOnRequest = { profile.photoOnRequest },
+            matchFilter = { profile.matchFilter },
+            endChat = { reason -> endActive(endReasonText(reason)) },
         )
     }
 
@@ -617,6 +619,29 @@ class WideRangeChatController(
         }
     }
 
+    private fun endReasonText(reason: OpenChat.EndReason): String = context.getString(
+        when (reason) {
+            OpenChat.EndReason.THEY_DECLINED -> R.string.ctl_ended_they_declined
+            OpenChat.EndReason.WE_DECLINED -> R.string.ctl_ended_we_declined
+            OpenChat.EndReason.NO_ANSWER -> R.string.ctl_ended_no_answer
+            OpenChat.EndReason.FILTERED -> R.string.ctl_ended_filtered
+        },
+    )
+
+    override fun answerChatRequest(accept: Boolean) {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.answerChatRequest(link.chat, accept) }
+        }
+    }
+
+    override fun setDisappearTimer(seconds: Long) {
+        scope.launch {
+            val link = activeLink ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.setDisappearTimer(link.chat, seconds) }
+        }
+    }
+
     override fun answerPhotoSwap(accept: Boolean) {
         scope.launch {
             val link = activeLink ?: return@launch
@@ -841,7 +866,8 @@ class WideRangeChatController(
                             return@launch
                         }
                         disarmHandshakeTimeout()
-                        openChat.start(event.peer, identity.publicKey)
+                        openChat.start(event.peer, identity.publicKey, link.chat)
+                        if (activeLink !== link) return@launch // declined right away (match filter)
                         shareNodes(link)
                     }
                     is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {

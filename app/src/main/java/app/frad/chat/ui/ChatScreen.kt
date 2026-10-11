@@ -43,6 +43,8 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Report
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Videocam
@@ -59,6 +61,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -86,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import app.frad.chat.R
+import app.frad.chat.chat.Acceptance
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MessageKind
@@ -146,8 +152,16 @@ internal fun ChatContent(
     onBlock: () -> Unit,
     onReport: (reason: String) -> Unit,
     onSaveContact: () -> Unit,
+    /** Non-null while the chat is still a request (see Acceptance). */
+    acceptance: Acceptance? = null,
+    onAnswerChatRequest: (accept: Boolean) -> Unit = {},
+    /** Leave (or decline) and ask someone else right away; null hides the button. */
+    onNext: (() -> Unit)? = null,
+    disappearSeconds: Long = 0,
+    onSetDisappear: (seconds: Long) -> Unit = {},
 ) {
     var draft by remember { mutableStateOf("") }
+    var showDisappearDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
     var reportDialog by remember { mutableStateOf(false) }
@@ -254,6 +268,13 @@ internal fun ChatContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = if (peerTyping) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (disappearSeconds > 0) {
+                            Text(
+                                stringResource(R.string.chat_disappear_on, disappearLabel(disappearSeconds)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                     Box {
                         IconButton(onClick = { showMoreMenu = true }) {
@@ -265,6 +286,13 @@ internal fun ChatContent(
                                 leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null) },
                                 onClick = { showMoreMenu = false; showSafetyNumber = true },
                             )
+                            if (acceptance == null) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.chat_disappear_menu)) },
+                                    leadingIcon = { Icon(Icons.Default.Timer, contentDescription = null) },
+                                    onClick = { showMoreMenu = false; showDisappearDialog = true },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.chat_block_ellipsis)) },
                                 leadingIcon = { Icon(Icons.Default.Block, contentDescription = null) },
@@ -275,6 +303,11 @@ internal fun ChatContent(
                                 leadingIcon = { Icon(Icons.Default.Report, contentDescription = null) },
                                 onClick = { showMoreMenu = false; reportDialog = true },
                             )
+                        }
+                    }
+                    if (onNext != null) {
+                        IconButton(onClick = onNext) {
+                            Icon(Icons.Default.SkipNext, contentDescription = stringResource(R.string.chat_next))
                         }
                     }
                     IconButton(onClick = onLeave) {
@@ -379,6 +412,14 @@ internal fun ChatContent(
                 dismissButton = { TextButton(onClick = { confirmSensitive = emptySet() }) { Text(stringResource(R.string.chat_edit)) } },
             )
         }
+        if (showDisappearDialog) {
+            DisappearDialog(
+                current = disappearSeconds,
+                onPick = { showDisappearDialog = false; onSetDisappear(it) },
+                onDismiss = { showDisappearDialog = false },
+            )
+        }
+
         if (showSafetyNumber) {
             AlertDialog(
                 onDismissRequest = { showSafetyNumber = false },
@@ -452,6 +493,14 @@ internal fun ChatContent(
             }
         }
 
+        if (acceptance != null) {
+            ChatRequestBar(
+                acceptance = acceptance,
+                name = Profile.displayName(remotePseudonym, remotePeerId),
+                onAnswer = onAnswerChatRequest,
+            )
+            return@Column
+        }
         Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
             Column {
                 Row(
@@ -819,3 +868,64 @@ private fun openFile(context: Context, message: ChatMessage) {
 
 /** Large enough for the 160dp inline image preview on a high-density screen. */
 private const val IMAGE_PREVIEW_MAX_PIXELS = 480
+
+/** Instead of the message field while a chat is still a request: accept/decline, or waiting. */
+@Composable
+private fun ChatRequestBar(acceptance: Acceptance, name: String, onAnswer: (Boolean) -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            when (acceptance) {
+                Acceptance.THEY_ASK -> {
+                    Text(stringResource(R.string.chat_request_incoming, name), style = MaterialTheme.typography.bodyLarge)
+                    Spacer(Modifier.height(4.dp))
+                    Text(stringResource(R.string.chat_request_incoming_hint), style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { onAnswer(false) }) { Text(stringResource(R.string.chat_request_decline)) }
+                        Button(onClick = { onAnswer(true) }) { Text(stringResource(R.string.chat_request_accept)) }
+                    }
+                }
+                Acceptance.WAITING_FOR_THEM -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(stringResource(R.string.chat_request_waiting, name), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+/** The choices for disappearing messages, in seconds (0: off). */
+private val DISAPPEAR_CHOICES = listOf(0L, 5 * 60L, 60 * 60L, 24 * 60 * 60L, 7 * 24 * 60 * 60L)
+
+@Composable
+private fun disappearLabel(seconds: Long): String = when {
+    seconds <= 0 -> stringResource(R.string.chat_disappear_off)
+    seconds < 60 * 60 -> pluralStringResource(R.plurals.chat_disappear_minutes, (seconds / 60).toInt(), (seconds / 60).toInt())
+    seconds < 24 * 60 * 60 -> pluralStringResource(R.plurals.chat_disappear_hours, (seconds / 3600).toInt(), (seconds / 3600).toInt())
+    else -> pluralStringResource(R.plurals.chat_disappear_days, (seconds / 86400).toInt(), (seconds / 86400).toInt())
+}
+
+@Composable
+private fun DisappearDialog(current: Long, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_disappear_menu)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.chat_disappear_explainer), style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                DISAPPEAR_CHOICES.forEach { seconds ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { onPick(seconds) },
+                    ) {
+                        RadioButton(selected = seconds == current, onClick = { onPick(seconds) })
+                        Text(disappearLabel(seconds))
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.chat_close)) } },
+    )
+}

@@ -3,7 +3,7 @@ package app.frad.chat.chat
 enum class MessageKind { TEXT, FILE }
 
 /** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text].
- *  [id] and [delivered] only matter for the live chat (delivery receipts) and aren't persisted. */
+ *  [id] and [delivered] are kept for delivery receipts. */
 data class ChatMessage(
     val fromMe: Boolean,
     val text: String,
@@ -15,12 +15,23 @@ data class ChatMessage(
     val localPath: String? = null,
     val id: String? = null,
     val delivered: Boolean = false,
+    /** When the message disappears (see [ChatUiState.Chatting.disappearSeconds]); null: never. */
+    val expiresAtMillis: Long? = null,
 )
 
 /** Maximum size of a file this app will send or accept over any transport (Wi-Fi Direct or
  *  wide-range) — guards against accidental huge sends and against a peer claiming an
  *  implausible size in a file offer. */
 const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
+
+/** A chat whose first messages are still waiting on a yes (see [ChatEnvelope.ChatAccept]). */
+enum class Acceptance {
+    /** They asked to chat with us: we see their profile and decide. */
+    THEY_ASK,
+
+    /** We asked: they're deciding. */
+    WAITING_FOR_THEM,
+}
 
 /** Where a photo swap (see [ChatEnvelope.PhotoRequest]) stands. */
 enum class PhotoSwap { WE_ASKED, THEY_ASKED }
@@ -67,6 +78,10 @@ sealed interface ChatUiState {
         /** They have a photo they only swap on request (see [ChatEnvelope.PhotoRequest]). */
         val remotePhotoHidden: Boolean = false,
         val photoSwap: PhotoSwap? = null,
+        /** Non-null until the chat request is accepted - no messages before that. */
+        val acceptance: Acceptance? = null,
+        /** Messages disappear this long after they were sent; 0: they stay. */
+        val disappearSeconds: Long = 0,
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

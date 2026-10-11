@@ -112,6 +112,8 @@ class BleChatController(
             canReceiveFile = { transferManager != null && _transferStatus.value == null },
             ownPhoto = { ProfilePhoto.bytesOrNull(context) },
             photoOnRequest = { profile.photoOnRequest },
+            matchFilter = { profile.matchFilter },
+            endChat = { reason -> endActive(endReasonText(reason)) },
         )
     }
 
@@ -207,7 +209,10 @@ class BleChatController(
     /** Whether FRAD is on screen. Scanning (finding others) only matters then - nobody can pick a
      *  chat partner from a list they can't see - so in the background only advertising and the
      *  GATT server run (others can still find and message us), which costs far less battery. */
-    private var uiVisible = false
+    @Volatile private var uiVisible = false
+
+    /** Whether FRAD is on screen (see [setUiVisible]) - e.g. to skip a chat-request notification. */
+    val isUiVisible: Boolean get() = uiVisible
 
     override fun setUiVisible(visible: Boolean) {
         scope.launch {
@@ -509,6 +514,29 @@ class BleChatController(
         }
     }
 
+    private fun endReasonText(reason: OpenChat.EndReason): String = context.getString(
+        when (reason) {
+            OpenChat.EndReason.THEY_DECLINED -> R.string.ctl_ended_they_declined
+            OpenChat.EndReason.WE_DECLINED -> R.string.ctl_ended_we_declined
+            OpenChat.EndReason.NO_ANSWER -> R.string.ctl_ended_no_answer
+            OpenChat.EndReason.FILTERED -> R.string.ctl_ended_filtered
+        },
+    )
+
+    override fun answerChatRequest(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.answerChatRequest(link.chat, accept) }
+        }
+    }
+
+    override fun setDisappearTimer(seconds: Long) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.setDisappearTimer(link.chat, seconds) }
+        }
+    }
+
     override fun answerPhotoSwap(accept: Boolean) {
         scope.launch {
             val link = activeLink() ?: return@launch
@@ -747,7 +775,8 @@ class BleChatController(
                     return
                 }
                 disarmConnectionTimeout()
-                openChat.start(event.peer, identity.publicKey)
+                openChat.start(event.peer, identity.publicKey, link.chat)
+                if (deviceAddress != activeAddress) return // declined right away (match filter)
                 shareNodes(link)
             }
             is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
