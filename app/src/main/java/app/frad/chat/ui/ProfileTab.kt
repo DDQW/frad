@@ -104,6 +104,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
     var retentionDays by remember { mutableStateOf(viewModel.historyRetentionDays) }
     var confirmWipe by remember { mutableStateOf(false) }
     var showNodeQr by remember { mutableStateOf(false) }
+    var showServers by remember { mutableStateOf(false) }
     var locationDenied by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -371,6 +372,7 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
                 }
                 Switch(checked = usePublicNodes, onCheckedChange = { usePublicNodes = it; viewModel.usePublicNodes = it })
             }
+            TextButton(onClick = { showServers = true }) { Text(stringResource(R.string.servers_show)) }
             Spacer(Modifier.height(12.dp))
             Text(
                 stringResource(R.string.profile_own_servers_explainer),
@@ -475,6 +477,8 @@ internal fun ProfileTab(viewModel: ChatViewModel) {
             ) { Text(stringResource(R.string.profile_delete_everything)) }
         }
     }
+
+    if (showServers) KnownServersDialog(viewModel) { showServers = false }
 
     if (showNodeQr) {
         val link = viewModel.nodeShareLink()

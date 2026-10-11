@@ -43,11 +43,29 @@ class NodeDirectory(
         if (profile.usePublicNodes) NodeLists.diverse(official() + learned(), MAX_SHARED) else emptyList()
     }
 
-    /** Fetches the official list if it's older than [OFFICIAL_REFRESH_MILLIS] (and allowed).
-     *  Blocking network I/O - call off the main thread. @return whether a fresh list came in. */
-    fun refreshOfficialIfDue(): Boolean {
+    enum class Source { YOURS, OFFICIAL, LEARNED }
+
+    /** [heardAtMillis]: when the official list was fetched, or the server last named by someone. */
+    data class KnownNode(val address: String, val source: Source, val heardAtMillis: Long?)
+
+    /** Every server this phone knows, for showing in settings - yours, then official, then learned. */
+    fun overview(): List<KnownNode> = synchronized(LOCK) {
+        val yours = profile.bootstrapNodes.filter(NodeLists::isValid).map { KnownNode(it, Source.YOURS, null) }
+        val officialAt = prefs.getLong(KEY_OFFICIAL_AT, 0L).takeIf { it > 0 }
+        val official = official().map { KnownNode(it, Source.OFFICIAL, officialAt) }
+        val learned = learnedWithTimes()
+            .filter { now() - it.value < LEARNED_TTL_MILLIS }
+            .entries.sortedByDescending { it.value }
+            .map { KnownNode(it.key, Source.LEARNED, it.value) }
+        (yours + official + learned).distinctBy { it.address }
+    }
+
+    /** Fetches the official list if it's older than [OFFICIAL_REFRESH_MILLIS] (and allowed) - or
+     *  right away with [force]. Blocking network I/O - call off the main thread.
+     *  @return whether a fresh list came in. */
+    fun refreshOfficialIfDue(force: Boolean = false): Boolean {
         if (!profile.usePublicNodes) return false
-        if (now() - prefs.getLong(KEY_OFFICIAL_AT, 0L) < OFFICIAL_REFRESH_MILLIS) return false
+        if (!force && now() - prefs.getLong(KEY_OFFICIAL_AT, 0L) < OFFICIAL_REFRESH_MILLIS) return false
         for (url in OFFICIAL_LIST_URLS) {
             val text = runCatching { fetch(url) }.getOrNull() ?: continue
             if (!text.lineSequence().any { it.startsWith("#") || NodeLists.isValid(it.trim()) }) continue // not a node list at all

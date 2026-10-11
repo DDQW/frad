@@ -42,6 +42,7 @@ import app.frad.chat.safety.BlockEntry
 import app.frad.chat.safety.BlockList
 import app.frad.chat.wideradius.CoarseLocation
 import app.frad.chat.wideradius.Geohash
+import app.frad.chat.wideradius.NodeDirectory
 import app.frad.chat.wideradius.NodeLinks
 import app.frad.chat.wideradius.WideRangeChatController
 import app.frad.chat.wideradius.WideRangeNode
@@ -325,6 +326,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissNodeImport() { _pendingNodeImport.value = emptyList() }
 
     /** A `frad://node` link for the configured nodes, to share - see [NodeLinks]. */
+    private val nodeDirectory by lazy { NodeDirectory(getApplication(), profile) }
+
+    /** Every server this phone knows and where it heard of it (see NodeDirectory). */
+    fun knownServers(): List<NodeDirectory.KnownNode> = nodeDirectory.overview()
+
+    /** Fetches the official server list now. @return whether a list came in. */
+    suspend fun refreshOfficialServers(): Boolean =
+        withContext(Dispatchers.IO) { runCatching { nodeDirectory.refreshOfficialIfDue(force = true) }.getOrDefault(false) }
+
     fun nodeShareLink(): String? = profile.bootstrapNodes.filter(NodeLinks::looksLikeNodeAddress).takeIf { it.isNotEmpty() }?.let(NodeLinks::build)
 
     /** Panic button: erases everything FRAD has stored - identity, profile, contacts, history,

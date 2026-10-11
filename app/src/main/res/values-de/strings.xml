@@ -326,4 +326,14 @@
     <string name="radar_contacts_online_hint">Solange du im Internet sichtbar bist, erscheinen Kontakte, die es auch sind, als online, und du kannst direkt mit ihnen chatten.</string>
     <string name="radar_contact_online">online</string>
     <string name="radar_chat_with_contact">Chatten</string>
+    <string name="servers_show">Bekannte Server anzeigen</string>
+    <string name="servers_title">Bekannte Server (%1$d)</string>
+    <string name="servers_explainer">FRAD versucht zuerst deine eigenen Server, dann die offizielle Liste und Server, von denen es über andere Server und Handys erfahren hat. Keiner davon ist allein nötig.</string>
+    <string name="servers_none">Noch keine Server bekannt. Erlaube öffentliche Server oder trag eigene ein.</string>
+    <string name="servers_refresh">Offizielle Liste aktualisieren</string>
+    <string name="servers_refreshing">Wird aktualisiert…</string>
+    <string name="servers_refresh_failed">Die offizielle Liste war nicht abrufbar - die bekannten Server funktionieren weiter.</string>
+    <string name="servers_source_yours">Deiner</string>
+    <string name="servers_source_official">Offizielle Liste</string>
+    <string name="servers_source_learned">Weitererzählt</string>
 </resources>

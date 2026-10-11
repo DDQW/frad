@@ -327,4 +327,14 @@
     <string name="radar_contacts_online_hint">While you\'re visible on the internet, contacts who are too show up as online and you can chat with them directly.</string>
     <string name="radar_contact_online">online</string>
     <string name="radar_chat_with_contact">Chat</string>
+    <string name="servers_show">Show known servers</string>
+    <string name="servers_title">Known servers (%1$d)</string>
+    <string name="servers_explainer">FRAD tries your own servers first, then the official list and servers it heard of from other servers and phones. None of them is needed on its own.</string>
+    <string name="servers_none">No servers known yet. Allow public servers or add your own.</string>
+    <string name="servers_refresh">Update official list</string>
+    <string name="servers_refreshing">Updating…</string>
+    <string name="servers_refresh_failed">Couldn\'t fetch the official list - the servers already known still work.</string>
+    <string name="servers_source_yours">Yours</string>
+    <string name="servers_source_official">Official list</string>
+    <string name="servers_source_learned">Heard of</string>
 </resources>
