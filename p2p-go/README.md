@@ -162,7 +162,7 @@ FRAD bootstrap/relay node ready. Share these multiaddrs with users for their boo
 | `-nodes-file` | `nodes.txt` next to the key | where verified servers are persisted |
 | `-official-list-url` | the two mirrors of `nodes/nodes.txt` | comma-separated, tried in order; empty disables |
 | `-relay-max-duration` | `1h` | lifetime of one relayed connection |
-| `-relay-max-data` | 64 MiB | bytes relayed per connection and direction |
+| `-relay-max-data` | 160 MiB | bytes relayed per connection and direction |
 | `-relay-unlimited` | `false` | lifts both relay limits |
 | `-allow-private-addrs` | `false` | accept and dial private/loopback node addresses - LAN test networks only |
 
@@ -176,8 +176,8 @@ nobody discovers it (it warns about this at startup).
 Relaying: libp2p's own defaults cap a relayed connection at 2 minutes and
 128 KiB per direction — enough for a hole-punching handshake, not for a chat
 or a file. This node relays each connection for up to `-relay-max-duration`
-and `-relay-max-data` bytes per direction (room for one maximum-size 25 MB
-file plus the chat). It also declares itself publicly reachable at startup:
+and `-relay-max-data` bytes per direction (default 160 MiB: room for one
+maximum-size 100 MB file plus the chat). It also declares itself publicly reachable at startup:
 libp2p otherwise only enables the relay service after AutoNAT has confirmed
 that, which a small, isolated network like FRAD's may never manage.
 

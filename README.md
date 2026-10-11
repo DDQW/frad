@@ -110,7 +110,7 @@ you have it, or ask in an issue — the summary above is the durable version.
   is still anonymous/rotating — you can only see what was said in past chats).
 - **M3 — Wi-Fi Direct file transfer**: implemented for Android 10+ (API 29).
   Once two phones are chatting over BLE, either side can attach any file (up
-  to 25 MB); the two phones form a one-off Wi-Fi Direct group (its network
+  to 100 MB); the two phones form a one-off Wi-Fi Direct group (its network
   name/passphrase relayed over the already-encrypted BLE channel) and stream
   the file over a socket, encrypted with a key derived from that same chat's
   Noise session — never the chat's own message key, so a concurrent text
@@ -131,7 +131,7 @@ you have it, or ask in an issue — the summary above is the durable version.
   via `gomobile bind`) does peer discovery by geohash-derived rendezvous
   topic; once found, the same Noise_XX session type BLE uses drives an
   encrypted chat and, on request, a second libp2p stream for file transfer
-  (25 MB cap, same as M3), with direct-vs-relayed dialing left entirely to
+  (100 MB cap, same as M3), with direct-vs-relayed dialing left entirely to
   libp2p. Each device advertises in its own geohash cell and the 8 around it,
   so people on either side of a cell border still find each other. An
   optional "hide my IP address" mode routes every connection through the

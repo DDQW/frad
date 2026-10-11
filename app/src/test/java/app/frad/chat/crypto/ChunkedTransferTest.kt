@@ -78,4 +78,38 @@ class ChunkedTransferTest {
         org.junit.Assert.assertEquals(listOf(100L, 200L, 250L), sent)
         org.junit.Assert.assertEquals(listOf(100L, 200L, 250L), received)
     }
+
+    @Test
+    fun `a file streams through without being held in memory as a whole`() = runBlocking {
+        val key = randomKey()
+        val pipe = FakePipe()
+        val plaintext = ByteArray(300_001) { (it * 7 % 256).toByte() }
+        // A source that hands out a few bytes per read, like a slow disk or socket.
+        val trickling = object : java.io.InputStream() {
+            private var position = 0
+            override fun read(): Int = if (position < plaintext.size) plaintext[position++].toInt() and 0xFF else -1
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (position >= plaintext.size) return -1
+                val n = minOf(len, 1000, plaintext.size - position)
+                System.arraycopy(plaintext, position, b, off, n)
+                position += n
+                return n
+            }
+        }
+
+        writeChunkedFrom(trickling, plaintext.size.toLong(), TransferCipher(key), write = { pipe.write(it) })
+        val sink = java.io.ByteArrayOutputStream()
+        readChunkedTo(sink, plaintext.size.toLong(), TransferCipher(key), readExactly = { pipe.readExactly(it) })
+
+        assertArrayEquals(plaintext, sink.toByteArray())
+    }
+
+    @Test
+    fun `a source shorter than announced is an error`() {
+        assertThrows(java.io.EOFException::class.java) {
+            runBlocking {
+                writeChunkedFrom(java.io.ByteArrayInputStream(ByteArray(10)), 11, TransferCipher(randomKey()), write = {})
+            }
+        }
+    }
 }

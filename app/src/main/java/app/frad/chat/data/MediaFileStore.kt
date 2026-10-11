@@ -14,14 +14,21 @@ import java.io.File
  */
 class MediaFileStore(private val context: Context) {
 
-    fun write(peerId: String, messageId: String, bytes: ByteArray): File {
-        val file = fileFor(peerId, messageId)
-        file.parentFile?.mkdirs()
-        file.writeBytes(bytes)
+    fun fileFor(peerId: String, messageId: String): File = File(peerDir(peerId), messageId)
+
+    /** Where a file being received from [peerId] is written to as it arrives. */
+    fun newIncomingFile(peerId: String, messageId: String): File =
+        fileFor(peerId, messageId).also { it.parentFile?.mkdirs() }
+
+    /** Moves the sent file [source] (a temporary copy, see MediaSanitizer) into [peerId]'s files. */
+    fun adopt(peerId: String, messageId: String, source: File): File {
+        val file = newIncomingFile(peerId, messageId)
+        if (!source.renameTo(file)) {
+            source.copyTo(file, overwrite = true)
+            source.delete()
+        }
         return file
     }
-
-    fun fileFor(peerId: String, messageId: String): File = File(peerDir(peerId), messageId)
 
     fun delete(peerId: String) {
         peerDir(peerId).deleteRecursively()

@@ -30,8 +30,10 @@ interface ChatController {
 
     /** The user is typing in the open chat; the peer is told so (throttled). */
     fun notifyTyping()
-    /** Asks the peer first (see [ChatEnvelope.FileRequest]) and sends only if they accept. */
-    fun sendFile(bytes: ByteArray, fileName: String, mimeType: String)
+    /** Asks the peer first (see [ChatEnvelope.FileRequest]) and sends only if they accept -
+     *  streaming [file], a temporary copy the controller takes over: kept as the sent file in
+     *  the chat, deleted if it doesn't go out. */
+    fun sendFile(file: java.io.File, fileName: String, mimeType: String)
 
     /** The user's answer to [ChatUiState.Chatting.incomingFile]. */
     fun answerIncomingFile(accept: Boolean)

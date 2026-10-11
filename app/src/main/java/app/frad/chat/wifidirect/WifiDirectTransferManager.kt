@@ -11,6 +11,7 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import androidx.annotation.RequiresApi
 import java.io.DataInputStream
+import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -26,8 +27,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import app.frad.chat.chat.closingOnCancel
 import app.frad.chat.crypto.TransferCipher
-import app.frad.chat.crypto.readChunked
-import app.frad.chat.crypto.writeChunked
+import app.frad.chat.crypto.readChunkedTo
+import app.frad.chat.crypto.writeChunkedFrom
 
 /** Like runCatching, but lets a cancellation through - a cancelled transfer must stop the
  *  caller too, not come back as an ordinary failure it might retry or report. */
@@ -61,12 +62,12 @@ class WifiDirectTransferManager(context: Context) {
     private val channel = manager.initialize(appContext, appContext.mainLooper, null)
 
     /** Sender side: creates a fresh group, waits for the receiver to connect, then streams
-     *  [fileBytes] as authenticated chunks keyed by [transferKey]. [onCredentialsReady] is
+     *  [file] as authenticated chunks keyed by [transferKey], reading it as it goes. [onCredentialsReady] is
      *  called once the group's network name/passphrase are known, so the caller can relay
      *  them to the peer over BLE before this function blocks waiting for the socket.
      *  Cancelling the calling coroutine aborts the transfer (the sockets are closed). */
     suspend fun hostAndSendFile(
-        fileBytes: ByteArray,
+        file: File,
         transferKey: ByteArray,
         onProgress: (Long) -> Unit = {},
         onCredentialsReady: suspend (WfdCredentials) -> Unit,
@@ -85,7 +86,9 @@ class WifiDirectTransferManager(context: Context) {
                     closingOnCancel(server::close) { acceptFromGroup(server, groupAddress) }.use { socket ->
                         val out = socket.getOutputStream()
                         closingOnCancel(socket::close) {
-                            writeChunked(fileBytes, TransferCipher(transferKey), CHUNK_SIZE, onProgress) { out.write(it) }
+                            file.inputStream().use { input ->
+                                writeChunkedFrom(input, file.length(), TransferCipher(transferKey), CHUNK_SIZE, onProgress) { out.write(it) }
+                            }
                             out.flush()
                         }
                     }
@@ -97,14 +100,16 @@ class WifiDirectTransferManager(context: Context) {
     }
 
     /** Receiver side: joins the group described by [credentials], connects to the group
-     *  owner, and reads back [expectedSize] plaintext bytes of authenticated chunks.
+     *  owner, and writes [expectedSize] plaintext bytes of authenticated chunks to [target] as
+     *  they arrive.
      *  Cancelling the calling coroutine aborts the transfer (the socket is closed). */
     suspend fun joinAndReceiveFile(
         credentials: WfdCredentials,
         transferKey: ByteArray,
         expectedSize: Long,
+        target: File,
         onProgress: (Long) -> Unit = {},
-    ): Result<ByteArray> = runCatchingNonCancellation {
+    ): Result<Unit> = runCatchingNonCancellation {
         val receiver = ConnectionInfoReceiver(appContext)
         try {
             receiver.register()
@@ -120,8 +125,10 @@ class WifiDirectTransferManager(context: Context) {
                 connectSocketWithRetry(groupOwnerAddress).use { socket ->
                     val input = DataInputStream(socket.getInputStream())
                     closingOnCancel(socket::close) {
-                        readChunked(expectedSize, TransferCipher(transferKey), MAX_CHUNK_ON_WIRE, onProgress) { length ->
-                            ByteArray(length).also(input::readFully)
+                        target.outputStream().use { out ->
+                            readChunkedTo(out, expectedSize, TransferCipher(transferKey), MAX_CHUNK_ON_WIRE, onProgress) { length ->
+                                ByteArray(length).also(input::readFully)
+                            }
                         }
                     }
                 }

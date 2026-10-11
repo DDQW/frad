@@ -21,8 +21,9 @@ data class ChatMessage(
 
 /** Maximum size of a file this app will send or accept over any transport (Wi-Fi Direct or
  *  wide-range) — guards against accidental huge sends and against a peer claiming an
- *  implausible size in a file offer. */
-const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
+ *  implausible size in a file offer. Files are streamed from and to disk, never held in memory
+ *  as a whole, so this is about transfer time, not RAM. */
+const val MAX_TRANSFER_FILE_BYTES = 100L * 1024 * 1024
 
 /** A chat whose first messages are still waiting on a yes (see [ChatEnvelope.ChatAccept]). */
 enum class Acceptance {

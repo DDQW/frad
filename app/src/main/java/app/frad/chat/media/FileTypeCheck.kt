@@ -10,6 +10,24 @@ package app.frad.chat.media
 object FileTypeCheck {
     const val UNKNOWN = "application/octet-stream"
 
+    /** [verifiedMimeType] for a file on disk: judged by its start and end (where a zip/APK keeps
+     *  its directory of entry names), so a large file isn't read in full. */
+    fun verifiedMimeType(file: java.io.File, claimed: String): String {
+        val sample = java.io.RandomAccessFile(file, "r").use { raf ->
+            val length = raf.length()
+            if (length <= 2L * SAMPLE_BYTES) {
+                ByteArray(length.toInt()).also { raf.readFully(it) }
+            } else {
+                val head = ByteArray(SAMPLE_BYTES).also { raf.readFully(it) }
+                raf.seek(length - SAMPLE_BYTES)
+                head + ByteArray(SAMPLE_BYTES).also { raf.readFully(it) }
+            }
+        }
+        return verifiedMimeType(sample, claimed)
+    }
+
+    private const val SAMPLE_BYTES = 64 * 1024
+
     fun verifiedMimeType(bytes: ByteArray, claimed: String): String {
         val claimedLower = claimed.lowercase()
         val detected = detect(bytes)

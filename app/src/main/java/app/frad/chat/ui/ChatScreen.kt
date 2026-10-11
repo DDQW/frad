@@ -795,7 +795,7 @@ private fun FileMessageContent(message: ChatMessage, veiled: Boolean, onOpen: ()
     val path = message.localPath ?: return
     if (message.mimeType?.startsWith("image/") == true) {
         var revealed by remember(path) { mutableStateOf(!veiled) }
-        // Up to 25 MB from a stranger: decoded subsampled to the preview size, off the main thread.
+        // Up to 100 MB from a stranger: decoded subsampled to the preview size, off the main thread.
         // While veiled only a 12-pixel-wide copy is kept and blown up blocky - shapes and colours,
         // nothing more, the same on every Android version (unlike a blur).
         val bitmap = produceState<ImageBitmap?>(initialValue = null, path, revealed) {

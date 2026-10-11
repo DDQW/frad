@@ -89,7 +89,7 @@ func parseFlags(args []string) (config, error) {
 	// finish. These defaults fit one chat session plus a maximum-size file.
 	maxDuration := fs.Duration("relay-max-duration", time.Hour,
 		"maximum lifetime of one relayed connection")
-	maxData := fs.Int64("relay-max-data", 64<<20,
+	maxData := fs.Int64("relay-max-data", 160<<20,
 		"maximum bytes relayed per connection and direction")
 	unlimited := fs.Bool("relay-unlimited", false,
 		"relay without any per-connection time/data limit (overrides the two flags above)")

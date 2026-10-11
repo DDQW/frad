@@ -425,30 +425,37 @@ class BleChatController(
      *  peer joined; the BLE channel only ever carries the small offer envelope (network name/
      *  passphrase/metadata), never the file itself. No-op if a transfer is already in flight,
      *  [fileTransferAvailable] is false, or [bytes] exceeds [MAX_TRANSFER_FILE_BYTES]. */
-    override fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
-        val manager = transferManager ?: return
-        if (bytes.size > MAX_TRANSFER_FILE_BYTES) return
+    override fun sendFile(file: java.io.File, fileName: String, mimeType: String) {
+        val manager = transferManager
+        val size = file.length()
+        if (manager == null || size > MAX_TRANSFER_FILE_BYTES) {
+            file.delete()
+            return
+        }
         scope.launch {
-            val link = activeLink() ?: return@launch
-            val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
-            if (_transferStatus.value != null) return@launch
+            var kept = false
             val job = coroutineContext[Job]
-            transferJob = job
             try {
-                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+                val link = activeLink() ?: return@launch
+                val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
+                if (_transferStatus.value != null) return@launch
+                transferJob = job
+                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, size)
                 if (!askToSend(link, offer)) return@launch
                 val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
                 _transferStatus.value = context.getString(R.string.ctl_transfer_sending, fileName)
-                val result = manager.hostAndSendFile(bytes, transferKey, onProgress = progressOf(offer.sizeBytes)) { credentials ->
+                val result = manager.hostAndSendFile(file, transferKey, onProgress = progressOf(offer.sizeBytes)) { credentials ->
                     link.chat.send(ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase))
                 }
                 result.onSuccess {
-                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+                    val path = mediaFileStore.adopt(remotePeerId, newMessageId(), file).absolutePath
+                    kept = true
+                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = size, localPath = path))
                 }.onFailure {
                     if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_sent, fileName))
                 }
             } finally {
+                if (!kept) file.delete()
                 transferEnded(job)
             }
         }
@@ -559,15 +566,19 @@ class BleChatController(
         _transferStatus.value = context.getString(R.string.ctl_transfer_receiving, offer.fileName)
         transferJob = scope.launch {
             val job = coroutineContext[Job]
+            val target = mediaFileStore.newIncomingFile(remotePeerId, newMessageId())
+            var received = false
             try {
-                val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes, onProgress = progressOf(offer.sizeBytes))
-                result.onSuccess { bytes ->
-                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
+                val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes, target, onProgress = progressOf(offer.sizeBytes))
+                result.onSuccess {
+                    received = true
+                    val mimeType = FileTypeCheck.verifiedMimeType(target, offer.mimeType)
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = mimeType, sizeBytes = offer.sizeBytes, localPath = target.absolutePath))
                 }.onFailure {
                     if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_received, offer.fileName))
                 }
             } finally {
+                if (!received) target.delete()
                 transferEnded(job)
             }
         }

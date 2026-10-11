@@ -1,6 +1,10 @@
 package app.frad.chat.crypto
 
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -21,19 +25,38 @@ suspend fun writeChunked(
     chunkSize: Int = DEFAULT_CHUNK_SIZE,
     onProgress: (Long) -> Unit = {},
     write: suspend (ByteArray) -> Unit,
+) = writeChunkedFrom(ByteArrayInputStream(plaintext), plaintext.size.toLong(), cipher, chunkSize, onProgress, write)
+
+/** Like [writeChunked], reading the [size] plaintext bytes from [source] one chunk at a time -
+ *  so a file is never held in memory as a whole.
+ *  @throws EOFException if [source] ends before [size] bytes. */
+suspend fun writeChunkedFrom(
+    source: InputStream,
+    size: Long,
+    cipher: TransferCipher,
+    chunkSize: Int = DEFAULT_CHUNK_SIZE,
+    onProgress: (Long) -> Unit = {},
+    write: suspend (ByteArray) -> Unit,
 ) {
-    var offset = 0
-    while (offset < plaintext.size) {
-        val end = minOf(offset + chunkSize, plaintext.size)
-        val ciphertext = cipher.encryptChunk(plaintext.copyOfRange(offset, end))
+    val buffer = ByteArray(chunkSize)
+    var done = 0L
+    while (done < size) {
+        val length = minOf(chunkSize.toLong(), size - done).toInt()
+        var filled = 0
+        while (filled < length) {
+            val n = source.read(buffer, filled, length - filled)
+            if (n < 0) throw EOFException("Source ended after ${done + filled} of $size bytes")
+            filled += n
+        }
+        val ciphertext = cipher.encryptChunk(buffer.copyOf(length))
         val framed = ByteBuffer.allocate(CHUNK_LENGTH_PREFIX_SIZE + ciphertext.size)
             .order(ByteOrder.BIG_ENDIAN)
             .putInt(ciphertext.size)
             .put(ciphertext)
             .array()
         write(framed)
-        offset = end
-        onProgress(end.toLong())
+        done += length
+        onProgress(done)
     }
 }
 
@@ -49,12 +72,27 @@ suspend fun readChunked(
     readExactly: suspend (Int) -> ByteArray,
 ): ByteArray {
     val result = ByteArrayOutputStream()
-    while (result.size() < expectedSize) {
+    readChunkedTo(result, expectedSize, cipher, maxChunkOnWire, onProgress, readExactly)
+    return result.toByteArray()
+}
+
+/** Like [readChunked], writing each decrypted chunk to [sink] as it arrives. */
+suspend fun readChunkedTo(
+    sink: OutputStream,
+    expectedSize: Long,
+    cipher: TransferCipher,
+    maxChunkOnWire: Int = DEFAULT_CHUNK_SIZE + 64,
+    onProgress: (Long) -> Unit = {},
+    readExactly: suspend (Int) -> ByteArray,
+) {
+    var received = 0L
+    while (received < expectedSize) {
         val length = ByteBuffer.wrap(readExactly(CHUNK_LENGTH_PREFIX_SIZE)).order(ByteOrder.BIG_ENDIAN).int
         require(length in 0..maxChunkOnWire) { "Implausible chunk length $length" }
-        result.write(cipher.decryptChunk(readExactly(length)))
-        require(result.size() <= expectedSize) { "Peer sent more than the announced $expectedSize bytes" }
-        onProgress(result.size().toLong())
+        val plaintext = cipher.decryptChunk(readExactly(length))
+        received += plaintext.size
+        require(received <= expectedSize) { "Peer sent more than the announced $expectedSize bytes" }
+        sink.write(plaintext)
+        onProgress(received)
     }
-    return result.toByteArray()
 }

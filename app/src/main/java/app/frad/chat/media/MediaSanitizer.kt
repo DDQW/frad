@@ -11,12 +11,17 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 
-/** A file as it will actually be sent - see [MediaSanitizer]. */
-class OutgoingFile(val bytes: ByteArray, val fileName: String, val mimeType: String)
+/** A file as it will actually be sent - see [MediaSanitizer]: a temporary copy in the cache, which
+ *  whoever sends it takes over (and deletes or keeps). */
+class OutgoingFile(val file: File, val fileName: String, val mimeType: String) {
+    val sizeBytes: Long get() = file.length()
+}
+
+/** The file is bigger than [limitBytes] - nothing was kept. */
+class FileTooLargeException(val limitBytes: Long) : Exception("File larger than $limitBytes bytes")
 
 /**
  * Removes what photos and videos say about the sender beyond their content before they go to a
@@ -36,18 +41,61 @@ object MediaSanitizer {
     const val MAX_IMAGE_DIMENSION = 2048
     private const val JPEG_QUALITY = 85
 
-    /** @throws Exception if a photo/video can't be cleaned - the caller should refuse to send it
+    /** @throws FileTooLargeException if the result is over [maxBytes];
+     *  any other Exception if a photo/video can't be cleaned - the caller should refuse to send it
      *  rather than fall back to the original with its metadata. */
-    fun prepare(context: Context, uri: Uri, mimeType: String, fileName: String): OutgoingFile {
+    fun prepare(context: Context, uri: Uri, mimeType: String, fileName: String, maxBytes: Long): OutgoingFile {
         val resolver = context.contentResolver
-        return when {
-            mimeType.startsWith("image/") && mimeType != "image/gif" -> cleanImage(resolver, uri, mimeType)
+        val prepared = when {
+            mimeType.startsWith("image/") && mimeType != "image/gif" -> cleanImage(context, resolver, uri, mimeType)
             mimeType.startsWith("video/") -> cleanVideo(context, uri)
-            else -> OutgoingFile(readAll(resolver, uri), fileName, mimeType)
+            else -> OutgoingFile(copyToCache(context, resolver, uri, maxBytes), fileName, mimeType)
+        }
+        if (prepared.sizeBytes > maxBytes) {
+            prepared.file.delete()
+            throw FileTooLargeException(maxBytes)
+        }
+        return prepared
+    }
+
+    /** A fresh temporary file for an outgoing copy (see [clearLeftovers]). */
+    private fun newOutgoingFile(context: Context, suffix: String): File {
+        val dir = File(context.cacheDir, OUTGOING_DIR).apply { mkdirs() }
+        return File.createTempFile("out", suffix, dir)
+    }
+
+    /** Deletes outgoing copies a killed app left behind - old ones only, since the BLE service may
+     *  still be sending a fresh one while the UI starts up again. */
+    fun clearLeftovers(context: Context, nowMillis: Long = System.currentTimeMillis()) {
+        File(context.cacheDir, OUTGOING_DIR).listFiles()
+            ?.filter { nowMillis - it.lastModified() > LEFTOVER_AGE_MILLIS }
+            ?.forEach { it.delete() }
+    }
+
+    private fun copyToCache(context: Context, resolver: ContentResolver, uri: Uri, maxBytes: Long): File {
+        val output = newOutgoingFile(context, ".bin")
+        try {
+            resolver.openInputStream(uri)?.use { input ->
+                output.outputStream().use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        total += n
+                        if (total > maxBytes) throw FileTooLargeException(maxBytes)
+                        out.write(buffer, 0, n)
+                    }
+                }
+            } ?: error("Couldn't open file")
+            return output
+        } catch (e: Exception) {
+            output.delete()
+            throw e
         }
     }
 
-    private fun cleanImage(resolver: ContentResolver, uri: Uri, mimeType: String): OutgoingFile {
+    private fun cleanImage(context: Context, resolver: ContentResolver, uri: Uri, mimeType: String): OutgoingFile {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         resolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Not a decodable image" }
@@ -66,9 +114,11 @@ object MediaSanitizer {
 
         // PNG keeps transparency; everything else becomes a JPEG.
         val png = mimeType == "image/png"
-        val out = ByteArrayOutputStream()
-        upright.compress(if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-        return OutgoingFile(out.toByteArray(), if (png) "image.png" else "photo.jpg", if (png) "image/png" else "image/jpeg")
+        val output = newOutgoingFile(context, if (png) ".png" else ".jpg")
+        output.outputStream().use { out ->
+            upright.compress(if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        }
+        return OutgoingFile(output, if (png) "image.png" else "photo.jpg", if (png) "image/png" else "image/jpeg")
     }
 
     private fun scaleDown(bitmap: Bitmap): Bitmap {
@@ -94,7 +144,8 @@ object MediaSanitizer {
     }
 
     private fun cleanVideo(context: Context, uri: Uri): OutgoingFile {
-        val output = File.createTempFile("sanitized", ".mp4", context.cacheDir)
+        val output = newOutgoingFile(context, ".mp4")
+        var done = false
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
         try {
@@ -131,16 +182,17 @@ object MediaSanitizer {
                 extractor.advance()
             }
             muxer.stop()
-            return OutgoingFile(output.readBytes(), "video.mp4", "video/mp4")
+            done = true
+            return OutgoingFile(output, "video.mp4", "video/mp4")
         } finally {
             runCatching { muxer?.release() }
             extractor.release()
-            output.delete()
+            if (!done) output.delete()
         }
     }
 
-    private fun readAll(resolver: ContentResolver, uri: Uri): ByteArray =
-        resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Couldn't open file")
+    private const val OUTGOING_DIR = "outgoing"
+    private const val LEFTOVER_AGE_MILLIS = 24L * 60 * 60 * 1000
 
     /** MediaFormat.KEY_ROTATION, by value - the constant itself only exists from API 23 docs on. */
     private const val KEY_ROTATION = "rotation-degrees"

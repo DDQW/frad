@@ -48,8 +48,8 @@ import app.frad.chat.crypto.Identity
 import app.frad.chat.crypto.ProofOfWork
 import app.frad.chat.crypto.TransferCipher
 import app.frad.chat.media.FileTypeCheck
-import app.frad.chat.crypto.readChunked
-import app.frad.chat.crypto.writeChunked
+import app.frad.chat.crypto.readChunkedTo
+import app.frad.chat.crypto.writeChunkedFrom
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
@@ -515,16 +515,21 @@ class WideRangeChatController(
      *  [app.frad.chat.ble.BleChatController] gives BLE (offer) vs. Wi-Fi Direct
      *  (bytes). Direct vs. relayed dialing for that second stream is entirely
      *  [WideRangeNode]/libp2p's own business - never decided here. */
-    override fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
-        if (bytes.size > MAX_TRANSFER_FILE_BYTES) return
+    override fun sendFile(file: java.io.File, fileName: String, mimeType: String) {
+        val size = file.length()
+        if (size > MAX_TRANSFER_FILE_BYTES) {
+            file.delete()
+            return
+        }
         scope.launch {
-            val link = activeLink ?: return@launch
-            val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
-            if (_transferStatus.value != null) return@launch
+            var kept = false
             val job = coroutineContext[Job]
-            transferJob = job
             try {
-                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, bytes.size.toLong())
+                val link = activeLink ?: return@launch
+                val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
+                if (_transferStatus.value != null) return@launch
+                transferJob = job
+                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, size)
                 if (!askToSend(link, offer)) return@launch
                 val transferKey = link.chat.transferKey(WIDE_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
                 _transferStatus.value = context.getString(R.string.ctl_transfer_sending, fileName)
@@ -533,8 +538,10 @@ class WideRangeChatController(
                     try {
                         closingOnCancel(transferStream::close) {
                             link.chat.send(ChatEnvelope.WideOffer(offer))
-                            writeChunked(bytes, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
-                                transferStream.write(it).getOrThrow()
+                            withContext(Dispatchers.IO) { file.inputStream() }.use { input ->
+                                writeChunkedFrom(input, size, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
+                                    transferStream.write(it).getOrThrow()
+                                }
                             }
                         }
                     } finally {
@@ -548,12 +555,14 @@ class WideRangeChatController(
                     false
                 }
                 if (sent) {
-                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+                    val path = mediaFileStore.adopt(remotePeerId, newMessageId(), file).absolutePath
+                    kept = true
+                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = size, localPath = path))
                 } else if (activeLink === link) {
                     _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_sent, fileName))
                 }
             } finally {
+                if (!kept) file.delete()
                 transferEnded(job)
             }
         }
@@ -659,28 +668,33 @@ class WideRangeChatController(
         _transferStatus.value = context.getString(R.string.ctl_transfer_receiving, offer.fileName)
         transferJob = scope.launch {
             val job = coroutineContext[Job]
+            val target = mediaFileStore.newIncomingFile(remotePeerId, newMessageId())
+            var received = false
             try {
-                val bytes = try {
+                try {
                     closingOnCancel(stream::close) {
-                        readChunked(offer.sizeBytes, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
-                            stream.readExactly(it).getOrThrow()
+                        withContext(Dispatchers.IO) { target.outputStream() }.use { out ->
+                            readChunkedTo(out, offer.sizeBytes, TransferCipher(transferKey), onProgress = progressOf(offer.sizeBytes)) {
+                                stream.readExactly(it).getOrThrow()
+                            }
                         }
                     }
+                    received = true
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "receiving file failed", e)
-                    null
                 } finally {
                     stream.close()
                 }
-                if (bytes != null) {
-                    val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = FileTypeCheck.verifiedMimeType(bytes, offer.mimeType), sizeBytes = offer.sizeBytes, localPath = path))
+                if (received) {
+                    val mimeType = FileTypeCheck.verifiedMimeType(target, offer.mimeType)
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = mimeType, sizeBytes = offer.sizeBytes, localPath = target.absolutePath))
                 } else if (activeLink === link) {
                     _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_received, offer.fileName))
                 }
             } finally {
+                if (!received) target.delete()
                 transferEnded(job)
             }
         }

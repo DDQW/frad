@@ -35,6 +35,7 @@ import app.frad.chat.contacts.Contact
 import app.frad.chat.contacts.ContactStore
 import app.frad.chat.crypto.Identity
 import app.frad.chat.data.MediaFileStore
+import app.frad.chat.media.FileTooLargeException
 import app.frad.chat.media.MediaSanitizer
 import app.frad.chat.profile.Gender
 import app.frad.chat.profile.Profile
@@ -80,7 +81,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         mediaFileStore.purgeExcept(contactStore.all().map { it.peerId }.toSet())
-        viewModelScope.launch(Dispatchers.IO) { historyStore.pruneExpired() }
+        viewModelScope.launch(Dispatchers.IO) {
+            historyStore.pruneExpired()
+            MediaSanitizer.clearLeftovers(application)
+        }
         application.bindService(Intent(application, LocalBleService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
@@ -459,19 +463,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            val prepared = withContext(Dispatchers.Default) {
-                runCatching { MediaSanitizer.prepare(app, uri, mimeType, fileName) }
+            val prepared = withContext(Dispatchers.IO) {
+                runCatching { MediaSanitizer.prepare(app, uri, mimeType, fileName, MAX_TRANSFER_FILE_BYTES) }
             }
             afterRead()
             val file = prepared.getOrElse {
-                _errorEvent.value = app.getString(if (isMedia) R.string.misc_file_sanitize_failed else R.string.misc_file_read_failed)
+                _errorEvent.value = when {
+                    it is FileTooLargeException -> tooLarge
+                    isMedia -> app.getString(R.string.misc_file_sanitize_failed)
+                    else -> app.getString(R.string.misc_file_read_failed)
+                }
                 return@launch
             }
-            if (file.bytes.size > MAX_TRANSFER_FILE_BYTES) {
-                _errorEvent.value = tooLarge
+            val controller = activeController
+            if (controller == null) {
+                file.file.delete()
                 return@launch
             }
-            activeController?.sendFile(file.bytes, file.fileName, file.mimeType)
+            controller.sendFile(file.file, file.fileName, file.mimeType)
         }
     }
 
