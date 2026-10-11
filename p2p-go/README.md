@@ -208,7 +208,7 @@ Android NDK (`ANDROID_NDK_HOME`, or a side-by-side NDK under `ANDROID_HOME`).
 `gomobile` and `gobind` don't need installing: they're pinned as tool
 dependencies in `go.mod`, and the task installs exactly those into
 `p2p-go/build/bin` (no `gomobile init`, which would fetch the latest `gobind`)
-and binds with `-trimpath -ldflags=-s -w` for `android/arm`, `android/arm64`
+and binds with `-trimpath -ldflags="-s -w -checklinkname=0"` (go-libp2p's `anet` links to `net.zoneCache`) for `android/arm`, `android/arm64`
 and `android/amd64`, API 26. This produces `p2p-go/build/p2pgo.aar`, which
 `app/build.gradle.kts` picks up automatically on the next build — see the
 root README's "Building" section. The CI job `android-real-p2p` does exactly

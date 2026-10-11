@@ -54,8 +54,8 @@ android {
         // Keep this under 1.0.0 until M4-M6 (see README "Project status") land -
         // a 1.0 tag implies feature-complete, which this isn't yet. Patch digit bumps
         // per commit; the minor digit only moves when a whole lettered milestone lands.
-        versionCode = 53
-        versionName = "0.3.49"
+        versionCode = 54
+        versionName = "0.3.50"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -215,7 +215,9 @@ tasks.register<Exec>("gomobileBind") {
         // The ABIs real phones (and the x86_64 emulator) use; 32-bit x86 is long gone.
         "-target=android/arm,android/arm64,android/amd64", "-androidapi=26",
         "-javapkg=app.frad.chat.p2pgo",
-        "-trimpath", "-ldflags=-s -w",
+        // go-libp2p's Android interface lookup (github.com/wlynxg/anet) links to net.zoneCache,
+        // which Go 1.23+ refuses unless the linkname check is off.
+        "-trimpath", "-ldflags=-s -w -checklinkname=0",
         "-o", p2pAarFile.absolutePath,
         "./node",
     )
