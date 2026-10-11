@@ -321,4 +321,9 @@
     <string name="radar_visible_remaining">Noch etwa %1$d Min. sichtbar</string>
     <string name="radar_visible_until_stop">Bis ich aufhöre</string>
     <string name="radar_wide_range_not_built">Großer Umkreis ist in diese App nicht eingebaut - siehe p2p-go/README.md.</string>
+    <string name="ctl_notice_contact_offline">Dein Kontakt ist nicht mehr online.</string>
+    <string name="ctl_ended_not_the_contact">es hat nicht dein Kontakt geantwortet</string>
+    <string name="radar_contacts_online_hint">Solange du im Internet sichtbar bist, erscheinen Kontakte, die es auch sind, als online, und du kannst direkt mit ihnen chatten.</string>
+    <string name="radar_contact_online">online</string>
+    <string name="radar_chat_with_contact">Chatten</string>
 </resources>

@@ -43,6 +43,7 @@ import app.frad.chat.chat.MAX_TRANSFER_FILE_BYTES
 import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
+import app.frad.chat.crypto.ContactRendezvous
 import app.frad.chat.crypto.Identity
 import app.frad.chat.crypto.ProofOfWork
 import app.frad.chat.crypto.TransferCipher
@@ -132,6 +133,9 @@ class WideRangeChatController(
         /** ...or a transfer stream that overtook its offer (they travel separately), held briefly. */
         var earlyTransferStream: WideRangeByteStream? = null
         var earlyTransferStreamTimeout: Job? = null
+
+        /** Set when the user asked for a specific saved contact: the peer must turn out to be them. */
+        var expectedContact: String? = null
     }
 
     /** Incoming chat requests still waiting for their [ProofOfWork] - checked outside the
@@ -150,6 +154,13 @@ class WideRangeChatController(
     private var discoveryJob: Job? = null
     private var incomingStreamJob: Job? = null
     private var findPeersJob: Job? = null
+
+    /** Saved contacts found online (their peer ID -> the libp2p peer to dial), see [refreshContacts]. */
+    private val contactAddresses = mutableMapOf<String, String>()
+    private val _onlineContacts = MutableStateFlow<Set<String>>(emptySet())
+    override val onlineContacts: StateFlow<Set<String>> = _onlineContacts.asStateFlow()
+    private val advertisedContactTopics = mutableSetOf<String>()
+    private var contactJob: Job? = null
 
     /** Starting the node suspends for a while (dialing bootstrap peers); without this, a quick
      *  off/on toggle during that time would run a second start next to the first - two libp2p
@@ -298,6 +309,11 @@ class WideRangeChatController(
         incomingStreamJob?.cancel(); incomingStreamJob = null
         findPeersJob?.cancel(); findPeersJob = null
         nodeExchangeJob?.cancel(); nodeExchangeJob = null
+        contactJob?.cancel(); contactJob = null
+        // The node stops with browsing, and its advertisements with it.
+        advertisedContactTopics.clear()
+        contactAddresses.clear()
+        _onlineContacts.value = emptySet()
     }
 
     /** Swaps server lists with the bootstrap servers while the node runs (see NodeDirectory). */
@@ -322,6 +338,12 @@ class WideRangeChatController(
                 delay(NODE_EXCHANGE_INTERVAL_MILLIS)
             }
         }
+        contactJob = scope.launch {
+            while (isActive) {
+                refreshContacts()
+                delay(CONTACT_LOOKUP_INTERVAL_MILLIS)
+            }
+        }
         findPeersJob = scope.launch {
             // A single DHT lookup is one-shot, unlike BLE's continuous scan - re-run it on an
             // interval for as long as browsing stays on.
@@ -338,6 +360,50 @@ class WideRangeChatController(
                     break
                 }
             }
+        }
+    }
+
+    /**
+     * Keeps every saved contact's rendezvous topic (see [ContactRendezvous]) advertised and looks
+     * each one up: a contact who is also on wide range right now advertises the same topic, so
+     * both see each other as online. Only the two of them can compute it.
+     */
+    private suspend fun refreshContacts() {
+        val now = System.currentTimeMillis()
+        val topicsByContact = contactStore.all()
+            .filter { it.staticKey != null && !blockList.isBlocked(it.peerId) }
+            .associate { contact ->
+                val secret = ContactRendezvous.secret(identity.privateKey, contact.staticKey!!)
+                contact.peerId to ContactRendezvous.topicsAround(secret, now)
+            }
+        val wanted = topicsByContact.values.flatten().toSet()
+        (advertisedContactTopics - wanted).forEach { node.stopAdvertising(it) }
+        (wanted - advertisedContactTopics).forEach { node.startAdvertising(it) }
+        advertisedContactTopics.retainAll(wanted)
+        advertisedContactTopics.addAll(wanted)
+
+        val online = mutableMapOf<String, String>()
+        for ((contactId, topics) in topicsByContact) {
+            val found = topics.firstNotNullOfOrNull { topic ->
+                node.lookupPeers(topic).getOrNull()?.firstOrNull { it != node.localPeerId }
+            }
+            if (found != null) online[contactId] = found
+        }
+        if (contactJob?.isActive != true) return // browsing stopped during the lookups
+        contactAddresses.clear()
+        contactAddresses.putAll(online)
+        _onlineContacts.value = online.keys.toSet()
+    }
+
+    override fun requestContactChat(contactPeerId: String) {
+        scope.launch {
+            if (_state.value !is ChatUiState.Browsing) return@launch
+            val address = contactAddresses[contactPeerId] ?: run {
+                _notices.tryEmit(context.getString(R.string.ctl_notice_contact_offline))
+                return@launch
+            }
+            val peer = NearbyPeer(sessionId = address, lastSeenAtMillis = System.currentTimeMillis(), signalStrength = SignalStrength.Unknown)
+            connectTo(peer, expectedContact = contactPeerId)
         }
     }
 
@@ -380,38 +446,42 @@ class WideRangeChatController(
             if (_state.value !is ChatUiState.Browsing) return@launch
             val picked = pickPeer(discoveredByPeerId.values.toList()) ?: return@launch
             cooldown.recordRequest(picked.sessionId)
+            connectTo(picked, expectedContact = null)
+        }
+    }
 
-            val connecting = ChatUiState.Connecting(picked)
-            _state.value = connecting
-            armHandshakeTimeout { _state.value === connecting }
-            val proofOfWork = withContext(Dispatchers.Default) {
-                ProofOfWork.solve(responderId = picked.sessionId, initiatorId = node.localPeerId, nowSeconds = nowSeconds())
-            }
-            if (_state.value !== connecting) return@launch
-            val stream = node.openStream(picked.sessionId, CHAT_PROTOCOL_ID).getOrElse {
-                if (_state.value === connecting) endActive(context.getString(R.string.ctl_ended_peer_unreachable))
-                return@launch
-            }
-            // Gave up waiting meanwhile (timeout), or an incoming chat got there first.
-            if (_state.value !== connecting || activeLink != null) {
-                stream.close()
-                return@launch
-            }
-            val link = newLink(stream, isInitiator = true)
-            activeLink = link
-            _state.value = ChatUiState.Handshaking
-            armHandshakeTimeout { activeLink === link && !link.chat.isReady }
-            startReadLoop(link)
-            try {
-                // The request opens with the proof of work, before the Noise handshake proper.
-                stream.write(lengthPrefixed(proofOfWork)).getOrThrow()
-                link.chat.start()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "couldn't send handshake", e)
-                if (activeLink === link) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
-            }
+    private suspend fun connectTo(picked: NearbyPeer, expectedContact: String?) {
+        val connecting = ChatUiState.Connecting(picked)
+        _state.value = connecting
+        armHandshakeTimeout { _state.value === connecting }
+        val proofOfWork = withContext(Dispatchers.Default) {
+            ProofOfWork.solve(responderId = picked.sessionId, initiatorId = node.localPeerId, nowSeconds = nowSeconds())
+        }
+        if (_state.value !== connecting) return
+        val stream = node.openStream(picked.sessionId, CHAT_PROTOCOL_ID).getOrElse {
+            if (_state.value === connecting) endActive(context.getString(R.string.ctl_ended_peer_unreachable))
+            return
+        }
+        // Gave up waiting meanwhile (timeout), or an incoming chat got there first.
+        if (_state.value !== connecting || activeLink != null) {
+            stream.close()
+            return
+        }
+        val link = newLink(stream, isInitiator = true)
+        link.expectedContact = expectedContact
+        activeLink = link
+        _state.value = ChatUiState.Handshaking
+        armHandshakeTimeout { activeLink === link && !link.chat.isReady }
+        startReadLoop(link)
+        try {
+            // The request opens with the proof of work, before the Noise handshake proper.
+            stream.write(lengthPrefixed(proofOfWork)).getOrThrow()
+            link.chat.start()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "couldn't send handshake", e)
+            if (activeLink === link) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
         }
     }
 
@@ -765,6 +835,11 @@ class WideRangeChatController(
                         return@launch
                     }
                     is ChatEvent.Ready -> {
+                        val expected = link.expectedContact
+                        if (expected != null && event.peer.peerId != expected) {
+                            endLink(link, context.getString(R.string.ctl_ended_not_the_contact))
+                            return@launch
+                        }
                         disarmHandshakeTimeout()
                         openChat.start(event.peer, identity.publicKey)
                         shareNodes(link)
@@ -854,6 +929,7 @@ class WideRangeChatController(
         private const val PEER_TTL_MILLIS = 3 * FIND_PEERS_INTERVAL_MILLIS
         private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
         private const val NODE_EXCHANGE_INTERVAL_MILLIS = 10 * 60_000L
+        private const val CONTACT_LOOKUP_INTERVAL_MILLIS = 2 * 60_000L
         /** How long a transfer stream may wait for the offer it belongs to. */
         private const val EARLY_TRANSFER_STREAM_MILLIS = 15_000L
         private const val SEEN_PROOF_OF_WORK_CAPACITY = 512

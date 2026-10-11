@@ -33,6 +33,7 @@ import app.frad.chat.p2pgo.node.PeerFoundListener as GoPeerFoundListener
 class WideRangeNode(context: Context) {
     companion object {
         const val isSupported: Boolean = true
+        private const val LOOKUP_TIMEOUT_MILLIS = 20_000L
 
         /**
          * The entries of [entries] (multiaddrs ending in `/p2p/<peerid>`) that every FRAD
@@ -116,6 +117,20 @@ class WideRangeNode(context: Context) {
 
     suspend fun findPeersOnce(rendezvousTopic: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching { requireHost().findPeersOnce(rendezvousTopic) }
+    }
+
+    /** Ends [startAdvertising] for a topic that's no longer wanted (yesterday's contact topic). */
+    suspend fun stopAdvertising(rendezvousTopic: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching { requireHost().stopAdvertising(rendezvousTopic) }
+    }
+
+    /**
+     * One DHT lookup for [rendezvousTopic], returning the peer IDs found - for looking up specific
+     * people (saved contacts, see ContactRendezvous); unlike [findPeersOnce] nothing reaches
+     * [discoveredPeers].
+     */
+    suspend fun lookupPeers(rendezvousTopic: String): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching { requireHost().lookupPeers(rendezvousTopic, LOOKUP_TIMEOUT_MILLIS).nonBlankLines() }
     }
 
     suspend fun openStream(peerId: String, protocolId: String): Result<WideRangeByteStream> = withContext(Dispatchers.IO) {

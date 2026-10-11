@@ -50,6 +50,9 @@ const (
 // (e.g. no peers yet), instead of trusting its (meaningless in that case) TTL.
 const advertiseRetryInterval = 30 * time.Second
 
+// lookupConnectTimeout bounds LookupPeers' check that a found peer is still there.
+const lookupConnectTimeout = 8 * time.Second
+
 const (
 	// openStreamTimeout bounds dialing + opening one stream, so a peer that's gone
 	// from the network can't leave the Kotlin side waiting indefinitely.
@@ -129,6 +132,9 @@ type Host struct {
 	nodesMu      sync.Mutex
 	knownNodes   []peer.AddrInfo // set by SetKnownNodes: what this host shares
 	learnedNodes []peer.AddrInfo // pushed to this host by others, until TakeLearnedNodes
+
+	advertMu sync.Mutex
+	adverts  map[string]context.CancelFunc // topic -> stops its StartAdvertising loop
 }
 
 // NewHost constructs (but does not yet bootstrap) a wide-range libp2p host.
@@ -243,11 +249,26 @@ func (n *Host) LocalPeerId() string {
 // long as the Host is running, so other peers' FindPeersOnce calls can find
 // this one. Errors are reported via PeerFoundListener.OnDiscoveryError rather
 // than returned, since advertising itself runs on a background loop.
+//
+// Advertising a topic that is already being advertised does nothing; see
+// StopAdvertising for topics that change over time (contact rendezvous).
 func (n *Host) StartAdvertising(rendezvousTopic string) error {
+	n.advertMu.Lock()
+	if n.adverts == nil {
+		n.adverts = make(map[string]context.CancelFunc)
+	}
+	if _, running := n.adverts[rendezvousTopic]; running {
+		n.advertMu.Unlock()
+		return nil
+	}
+	ctx, cancel := context.WithCancel(n.ctx)
+	n.adverts[rendezvousTopic] = cancel
+	n.advertMu.Unlock()
+
 	discovery := drouting.NewRoutingDiscovery(n.dht)
 	go func() {
 		for {
-			ttl, err := discovery.Advertise(n.ctx, rendezvousTopic)
+			ttl, err := discovery.Advertise(ctx, rendezvousTopic)
 			if err != nil {
 				if n.peersListener != nil {
 					n.peersListener.OnDiscoveryError(err.Error())
@@ -255,13 +276,56 @@ func (n *Host) StartAdvertising(rendezvousTopic string) error {
 				ttl = advertiseRetryInterval
 			}
 			select {
-			case <-n.ctx.Done():
+			case <-ctx.Done():
 				return
 			case <-time.After(ttl):
 			}
 		}
 	}()
 	return nil
+}
+
+// StopAdvertising ends StartAdvertising's re-advertising of rendezvousTopic.
+// The provider records already in the DHT simply expire.
+func (n *Host) StopAdvertising(rendezvousTopic string) {
+	n.advertMu.Lock()
+	defer n.advertMu.Unlock()
+	if cancel, ok := n.adverts[rendezvousTopic]; ok {
+		cancel()
+		delete(n.adverts, rendezvousTopic)
+	}
+}
+
+// LookupPeers runs one DHT lookup for rendezvousTopic and returns the peers
+// found that can be connected to right now (newline-separated peer IDs, this
+// host excluded) once the lookup is
+// exhausted or timeoutMillis has passed. Unlike FindPeersOnce nothing is
+// reported to PeerFoundListener: these are specific people being looked for
+// (saved contacts), not strangers to list as nearby.
+func (n *Host) LookupPeers(rendezvousTopic string, timeoutMillis int) (string, error) {
+	ctx, cancel := context.WithTimeout(n.ctx, time.Duration(timeoutMillis)*time.Millisecond)
+	defer cancel()
+	discovery := drouting.NewRoutingDiscovery(n.dht)
+	peerChan, err := discovery.FindPeers(ctx, rendezvousTopic)
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	for p := range peerChan {
+		if p.ID == n.h.ID() {
+			continue
+		}
+		n.h.Peerstore().AddAddrs(p.ID, p.Addrs, peerstore.TempAddrTTL)
+		// Provider records outlive the session that wrote them (each session has a fresh
+		// peer ID): only report who actually answers now.
+		connectCtx, connectCancel := context.WithTimeout(ctx, lookupConnectTimeout)
+		err := n.h.Connect(network.WithAllowLimitedConn(connectCtx, "frad contact lookup"), p)
+		connectCancel()
+		if err == nil {
+			found = append(found, p.ID.String())
+		}
+	}
+	return strings.Join(found, "\n"), nil
 }
 
 // FindPeersOnce runs one DHT lookup round for rendezvousTopic; each peer found

@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material3.Card
@@ -24,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +44,7 @@ import app.frad.chat.profile.Profile
 internal fun ContactsTab(viewModel: ChatViewModel) {
     var contacts by remember { mutableStateOf(viewModel.contacts()) }
     var viewingHistoryFor by remember { mutableStateOf<Contact?>(null) }
+    val online by viewModel.onlineContacts.collectAsState()
 
     val viewing = viewingHistoryFor
     if (viewing != null) {
@@ -63,6 +66,11 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
         if (contacts.isEmpty()) {
             EmptyState(Icons.Default.Group, stringResource(R.string.radar_no_contacts))
         } else {
+            Text(
+                stringResource(R.string.radar_contacts_online_hint),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            )
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 items(contacts) { contact ->
                     Card(
@@ -75,7 +83,21 @@ internal fun ContactsTab(viewModel: ChatViewModel) {
                         ) {
                             Avatar(label = contact.alias)
                             Spacer(Modifier.width(12.dp))
-                            Text(Profile.displayName(contact.alias, contact.peerId), modifier = Modifier.weight(1f))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(Profile.displayName(contact.alias, contact.peerId))
+                                if (contact.peerId in online) {
+                                    Text(
+                                        stringResource(R.string.radar_contact_online),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            if (contact.peerId in online) {
+                                IconButton(onClick = { viewModel.chatWithContact(contact.peerId) }) {
+                                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = stringResource(R.string.radar_chat_with_contact))
+                                }
+                            }
                             IconButton(onClick = {
                                 viewModel.removeContact(contact.peerId)
                                 contacts = viewModel.contacts()

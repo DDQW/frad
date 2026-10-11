@@ -51,4 +51,12 @@ interface ChatController {
     /** The user has seen an [ChatUiState.Ended] message shown while not browsing - go back to
      *  [ChatUiState.Idle] so they can start again. */
     fun acknowledgeEnded()
+
+    /** Saved contacts (by peer ID) that can be reached for a chat right now - wide range only. */
+    val onlineContacts: StateFlow<Set<String>> get() = NO_ONLINE_CONTACTS
+
+    /** Opens a chat with the saved contact [contactPeerId] if [onlineContacts] has them. */
+    fun requestContactChat(contactPeerId: String) {}
 }
+
+private val NO_ONLINE_CONTACTS: StateFlow<Set<String>> = kotlinx.coroutines.flow.MutableStateFlow(emptySet())

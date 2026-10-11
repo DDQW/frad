@@ -113,6 +113,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val transferProgress: StateFlow<Float?> = _mode.flatMapLatest { mode ->
         controllerFlow(mode).flatMapLatest { it?.transferProgress ?: flowOf(null) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** Saved contacts reachable for a chat right now (see ContactRendezvous) - wide range only. */
+    val onlineContacts: StateFlow<Set<String>> = _mode.flatMapLatest { mode ->
+        controllerFlow(mode).flatMapLatest { it?.onlineContacts ?: flowOf(emptySet()) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
     // Declared before the init block below, which reads it as soon as it starts collecting.
     private val _visibleUntilMillis = MutableStateFlow(profile.visibleUntilMillis)
 
@@ -381,6 +385,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         activeController?.setBrowsing(enabled)
     }
     fun requestRandomChat() { activeController?.requestRandomChat() }
+    fun chatWithContact(peerId: String) { activeController?.requestContactChat(peerId) }
     fun sendMessage(text: String) { activeController?.sendMessage(text) }
     fun notifyTyping() { activeController?.notifyTyping() }
     fun endChat() { activeController?.endActiveConnection(getApplication<Application>().getString(R.string.misc_end_reason_you_left)) }

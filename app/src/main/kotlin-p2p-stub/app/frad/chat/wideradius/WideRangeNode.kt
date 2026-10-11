@@ -27,6 +27,8 @@ class WideRangeNode(@Suppress("UNUSED_PARAMETER") context: Context) {
     suspend fun stop(): Result<Unit> = Result.success(Unit)
     suspend fun startAdvertising(rendezvousTopic: String): Result<Unit> = unsupported()
     suspend fun findPeersOnce(rendezvousTopic: String): Result<Unit> = unsupported()
+    suspend fun stopAdvertising(rendezvousTopic: String): Result<Unit> = unsupported()
+    suspend fun lookupPeers(rendezvousTopic: String): Result<List<String>> = unsupported()
     suspend fun openStream(peerId: String, protocolId: String): Result<WideRangeByteStream> = unsupported()
 
     fun setKnownNodes(nodes: List<String>) = Unit

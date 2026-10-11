@@ -173,3 +173,48 @@ func TestTwoHostsRendezvousViaBootstrapAndChat(t *testing.T) {
 		t.Fatalf("expected 'hello', got %q", string(buf))
 	}
 }
+
+func TestLookupPeersFindsAnAdvertiserAndStopAdvertisingIsSafe(t *testing.T) {
+	bootstrapAddrs := startTestBootstrap(t)
+	newStarted := func() *Host {
+		h, err := NewHost(&Config{ListenPort: 0, IdentitySeed: seed(), BootstrapPeers: bootstrapAddrs}, &collectingPeers{}, &collectingStreams{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { h.Stop() })
+		if err := h.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	a, b := newStarted(), newStarted()
+	time.Sleep(1 * time.Second)
+
+	topic := "frad/contact/v1/test"
+	if err := a.StartAdvertising(topic); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.StartAdvertising(topic); err != nil { // already running: a no-op
+		t.Fatal(err)
+	}
+	time.Sleep(1 * time.Second)
+
+	var found string
+	for attempt := 0; attempt < 10 && found == ""; attempt++ {
+		got, err := b.LookupPeers(topic, 5000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found = got
+		if found == "" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if found != a.LocalPeerId() {
+		t.Fatalf("expected to find exactly %s, got %q", a.LocalPeerId(), found)
+	}
+
+	a.StopAdvertising(topic)
+	a.StopAdvertising(topic) // twice is fine
+	a.StopAdvertising("never/advertised")
+}

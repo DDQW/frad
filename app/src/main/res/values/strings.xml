@@ -322,4 +322,9 @@
     <string name="radar_visible_remaining">Visible for about %1$d more min</string>
     <string name="radar_visible_until_stop">Until I stop</string>
     <string name="radar_wide_range_not_built">Wide-range isn\'t built into this app - see p2p-go/README.md.</string>
+    <string name="ctl_notice_contact_offline">They\'re not online any more.</string>
+    <string name="ctl_ended_not_the_contact">the person who answered wasn\'t your contact</string>
+    <string name="radar_contacts_online_hint">While you\'re visible on the internet, contacts who are too show up as online and you can chat with them directly.</string>
+    <string name="radar_contact_online">online</string>
+    <string name="radar_chat_with_contact">Chat</string>
 </resources>
