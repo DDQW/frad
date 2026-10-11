@@ -30,7 +30,8 @@ class WideRangeByteStream internal constructor(private val goStream: GoStream) {
             val result = ByteArray(length)
             var offset = 0
             while (offset < length) {
-                val chunk = goStream.read(length - offset)
+                // Go's int is a Java long across the gomobile binding.
+                val chunk = goStream.read((length - offset).toLong())
                 chunk.copyInto(result, offset)
                 offset += chunk.size
             }

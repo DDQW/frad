@@ -1,0 +1,50 @@
+name: Node list crawler
+
+# Keeps nodes/nodes.txt - the official list of FRAD servers - current: crawls
+# the server network (p2p-go/cmd/nodecrawl) and commits the result to master
+# if anything changed. See nodes/README.md for the listing rules.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two crawls racing to push would just make one of them fail.
+concurrency:
+  group: nodes-crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: p2p-go/go.mod
+          cache-dependency-path: p2p-go/go.sum
+
+      - name: Crawl
+        working-directory: p2p-go
+        run: go run ./cmd/nodecrawl -dir ../nodes
+
+      # The crawler writes byte-identical files when nothing changed, so this
+      # only commits real changes.
+      - name: Commit updated list
+        run: |
+          if [ -z "$(git status --porcelain -- nodes/)" ]; then
+            echo "Node list unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nodes/
+          git commit -m "Update node list (crawler)"
+          git push origin HEAD:master

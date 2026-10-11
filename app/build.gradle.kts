@@ -33,8 +33,9 @@ val hasReleaseSigningConfig =
 // `assembleDebug` must keep working with no Go/gomobile/NDK installed at all.
 // When the .aar hasn't been built, `kotlin-p2p-stub` compiles in its place -
 // see wideradius/WideRangeNode.kt in each variant for why the two are
-// source-compatible. Run `./gradlew gomobileBind` (Go + gomobile + Android
-// NDK required - see p2p-go/README.md) to produce the real .aar.
+// source-compatible. Run `./gradlew gomobileBind` (Go + Android NDK required;
+// gomobile itself is pinned in p2p-go/go.mod - see p2p-go/README.md) to produce
+// the real .aar.
 val p2pAarFile = rootProject.file("p2p-go/build/p2pgo.aar")
 val hasP2pGoAar = p2pAarFile.exists()
 
@@ -181,18 +182,41 @@ dependencies {
 // Builds p2p-go/node into p2p-go/build/p2pgo.aar via `gomobile bind`. Never a
 // dependency of `test`/`assembleDebug` (see the comment above the `android {}`
 // block) - run it explicitly, then re-run a normal build to pick up the .aar.
-// Requires Go 1.22+, `go install golang.org/x/mobile/cmd/gomobile@latest` +
-// `gomobile init`, and the Android NDK (ANDROID_HOME/ANDROID_NDK_HOME set).
+// Requires Go (the version p2p-go/go.mod names; GOTOOLCHAIN=auto fetches it) and
+// the Android NDK (ANDROID_NDK_HOME, or a side-by-side NDK under ANDROID_HOME).
+//
+// gomobile and gobind are the versions pinned as tool dependencies in
+// p2p-go/go.mod, installed into p2p-go/build/bin by gomobileTools - deliberately
+// not a global `gomobile init`, which installs whatever gobind is latest that day.
+// With -trimpath and stripped symbols, the same commit binds to the same .aar on
+// any machine, which F-Droid's reproducible builds need.
+val p2pGoDir = rootProject.file("p2p-go")
+val p2pGoBin = p2pGoDir.resolve("build/bin")
+val exeSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
+
+val gomobileTools = tasks.register<Exec>("gomobileTools") {
+    workingDir = p2pGoDir
+    inputs.files(p2pGoDir.resolve("go.mod"), p2pGoDir.resolve("go.sum"))
+    outputs.dir(p2pGoBin)
+    environment("GOBIN", p2pGoBin.absolutePath)
+    commandLine("go", "install", "golang.org/x/mobile/cmd/gomobile", "golang.org/x/mobile/cmd/gobind")
+}
+
 tasks.register<Exec>("gomobileBind") {
-    workingDir = rootProject.projectDir
-    inputs.dir("p2p-go/node")
-    inputs.file("p2p-go/go.mod")
+    dependsOn(gomobileTools)
+    workingDir = p2pGoDir
+    inputs.dir(p2pGoDir.resolve("node"))
+    inputs.files(p2pGoDir.resolve("go.mod"), p2pGoDir.resolve("go.sum"))
     outputs.file(p2pAarFile)
+    // gomobile runs `gobind` from PATH: make sure that's the pinned one.
+    environment("PATH", p2pGoBin.absolutePath + File.pathSeparator + System.getenv("PATH"))
     commandLine(
-        "gomobile", "bind",
-        "-target=android", "-androidapi=26",
+        p2pGoBin.resolve("gomobile$exeSuffix").absolutePath, "bind",
+        // The ABIs real phones (and the x86_64 emulator) use; 32-bit x86 is long gone.
+        "-target=android/arm,android/arm64,android/amd64", "-androidapi=26",
         "-javapkg=app.frad.chat.p2pgo",
-        "-o", p2pAarFile.path,
-        "./p2p-go/node",
+        "-trimpath", "-ldflags=-s -w",
+        "-o", p2pAarFile.absolutePath,
+        "./node",
     )
 }

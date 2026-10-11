@@ -2,13 +2,17 @@ package node
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -240,6 +244,83 @@ func TestRelayOnlyHostNeverConnectsDirectly(t *testing.T) {
 	for _, c := range a.h.Network().ConnsToPeer(b.h.ID()) {
 		if !isCircuit(c.RemoteMultiaddr()) {
 			t.Fatalf("A sees B directly at %s", c.RemoteMultiaddr())
+		}
+	}
+}
+
+// TestDefaultModeHostReservesRelaySlot checks a default-mode host books a slot
+// on its bootstrap/relay node by itself (nobody calls client.Reserve here), so
+// a third party that knows it only by a circuit address can reach it. Before
+// relayOptions forced reachability to private, AutoRelay waited for an AutoNAT
+// verdict that never came on a network this small, and this test failed.
+func TestDefaultModeHostReservesRelaySlot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	relayHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.EnableRelayService(),
+		libp2p.ForceReachabilityPublic(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relayHost.Close()
+	// AutoRelay drops a candidate that doesn't (yet) speak the hop protocol, so
+	// only start the app host once the relay service is up - as it long has been by
+	// the time a phone connects to a real bootstrap node.
+	waitFor(t, ctx, "the relay service to start", func() bool {
+		return slices.Contains(relayHost.Mux().Protocols(), protocol.ID(proto.ProtoIDv2Hop))
+	})
+
+	aStreams := &collectingStreams{}
+	a, err := NewHost(&Config{IdentitySeed: seed(), BootstrapPeers: p2pAddrs(relayHost)}, &collectingPeers{}, aStreams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "A to reserve a relay slot", func() bool {
+		info := relayHost.ConnManager().GetTagInfo(a.h.ID())
+		return info != nil && info.Tags["relay-reservation"] > 0
+	})
+
+	c, err := libp2p.New(libp2p.NoListenAddrs, libp2p.EnableRelay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	circuit := multiaddr.StringCast("/p2p/" + relayHost.ID().String() + "/p2p-circuit")
+	var viaRelay []multiaddr.Multiaddr
+	for _, addr := range relayHost.Addrs() {
+		viaRelay = append(viaRelay, addr.Encapsulate(circuit))
+	}
+	limitedCtx := network.WithAllowLimitedConn(ctx, "test")
+	if err := c.Connect(limitedCtx, peer.AddrInfo{ID: a.h.ID(), Addrs: viaRelay}); err != nil {
+		t.Fatalf("C reaching A through its relay reservation: %v", err)
+	}
+	s, err := c.NewStream(limitedCtx, a.h.ID(), ChatProtocolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "A to see C's stream", func() bool {
+		_, ok := aStreams.first()
+		return ok
+	})
+}
+
+func waitFor(t *testing.T, ctx context.Context, what string, cond func() bool) {
+	t.Helper()
+	for !cond() {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

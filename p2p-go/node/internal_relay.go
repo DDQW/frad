@@ -19,11 +19,21 @@ import (
 // direct connections but has no relay fallback and, more fundamentally, no
 // way to bootstrap its DHT routing table in the first place (see
 // ProtocolPrefix's doc comment).
+//
+// Reachability is forced to private because AutoRelay only starts looking for
+// a relay once AutoNAT reports a reachability change, and AutoNAT needs
+// several peers willing to dial back before it reports anything - which
+// FRAD's small, isolated network may never have. Without this a phone never
+// reserves a relay slot, so nobody can reach it unless a direct dial or hole
+// punch happens to work. A phone is effectively always behind NAT/CGNAT, so
+// "private" is the honest default; it also keeps the DHT in client mode, as
+// ModeAuto would without a reachability verdict anyway.
 func relayOptions(relays []peer.AddrInfo) []libp2p.Option {
 	opts := []libp2p.Option{
 		libp2p.EnableRelay(),
 		libp2p.NATPortMap(),
 		libp2p.EnableHolePunching(),
+		libp2p.ForceReachabilityPrivate(),
 	}
 	if len(relays) > 0 {
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))

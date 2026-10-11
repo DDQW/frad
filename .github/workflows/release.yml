@@ -11,6 +11,9 @@ on:
     branches: [master]
     tags:
       - "v*.*.*"
+    # A crawler update of the node list (nodes/) changes nothing in the app, so it
+    # doesn't re-publish "latest". Tag pushes ignore path filters, so releases still run.
+    paths-ignore: ['nodes/**']
 
 jobs:
   build-and-release:

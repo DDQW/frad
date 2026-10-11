@@ -1,0 +1,12 @@
+# FRAD official node list - pinned entries (see README.md).
+#
+# Servers listed here always appear in nodes.txt, whether or not the crawler
+# reaches them, and are checked first in every crawl. Keep this short: it is
+# for servers the maintainers vouch for (e.g. run themselves), not a way around
+# the three-sightings rule everything else goes through.
+#
+# One multiaddr per line, ending in /p2p/<peerid>, e.g.
+#   /ip4/203.0.113.7/tcp/4001/p2p/12D3KooW...
+#   /dns4/frad.example.org/udp/4001/quic-v1/p2p/12D3KooW...
+# A malformed or non-public entry fails the crawl, so typos get noticed.
+# banned.txt wins over this file.
