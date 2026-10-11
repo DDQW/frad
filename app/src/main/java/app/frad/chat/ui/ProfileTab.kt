@@ -547,8 +547,7 @@ private fun CrashReportSettings(viewModel: ChatViewModel) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = {
                 val text = runCatching { reports.first().readText() }.getOrNull() ?: return@OutlinedButton
-                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-                context.startActivity(Intent.createChooser(send, chooserTitle))
+                ShareText.share(context, text, chooserTitle, fileName = "frad-crash.txt")
             }) { Text(chooserTitle) }
             TextButton(onClick = { CrashReports.deleteAll(context); reports = emptyList() }) {
                 Text(stringResource(R.string.extra_crash_reports_delete))

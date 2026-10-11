@@ -50,6 +50,20 @@ class SealedBox(private val key: SecretKey) {
         private const val TAG_BITS = 128
 
         fun isSealed(value: String): Boolean = value.startsWith(PREFIX)
+
+        /**
+         * Whether a failure to [open] something means the stored value is lost for good (sealed
+         * under a key that's gone, tampered with, not ours) rather than the Keystore failing for
+         * now (busy, locked, a vendor hiccup) - only the former justifies throwing the value away.
+         */
+        fun isUnrecoverable(e: Throwable): Boolean = when (e) {
+            is javax.crypto.AEADBadTagException, is javax.crypto.BadPaddingException -> true
+            is java.security.UnrecoverableKeyException, is java.security.InvalidKeyException -> true
+            is java.security.KeyStoreException, is java.security.ProviderException -> false
+            is java.security.GeneralSecurityException -> false
+            is IllegalStateException -> false
+            else -> true // malformed: bad base64, too short, unparsable contents
+        }
     }
 }
 

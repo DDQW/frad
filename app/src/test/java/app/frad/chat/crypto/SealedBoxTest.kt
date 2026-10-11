@@ -52,4 +52,14 @@ class SealedBoxTest {
     fun `plain JSON from older versions is not mistaken for a sealed value`() {
         assertFalse(SealedBox.isSealed("""[{"fromMe":true,"text":"hi","atMillis":1}]"""))
     }
+
+    @Test
+    fun `only a lost key or broken data counts as unrecoverable`() {
+        val wrongKey = runCatching { SealedBox(newKey()).openString(SealedBox(newKey()).sealString("x")) }.exceptionOrNull()!!
+        assertTrue(SealedBox.isUnrecoverable(wrongKey))
+        val garbage = runCatching { SealedBox(newKey()).open("k1:!!") }.exceptionOrNull()!!
+        assertTrue(SealedBox.isUnrecoverable(garbage))
+        assertFalse(SealedBox.isUnrecoverable(java.security.ProviderException("Keystore operation failed")))
+        assertFalse(SealedBox.isUnrecoverable(java.security.KeyStoreException("busy")))
+    }
 }

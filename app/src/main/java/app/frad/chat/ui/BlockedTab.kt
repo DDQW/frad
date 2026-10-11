@@ -1,6 +1,5 @@
 package app.frad.chat.ui
 
-import android.content.Intent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -114,10 +113,7 @@ internal fun BlockedTab(viewModel: ChatViewModel) {
                 val chooserTitle = stringResource(R.string.misc_blocked_export_report_chooser)
                 TextButton(onClick = {
                     // Only ever leaves the phone this way - the user picks where it goes.
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                        .putExtra(Intent.EXTRA_SUBJECT, subject)
-                        .putExtra(Intent.EXTRA_TEXT, transcript)
-                    context.startActivity(Intent.createChooser(send, chooserTitle))
+                    ShareText.share(context, transcript, chooserTitle, subject, fileName = "frad-report.txt")
                 }) { Text(stringResource(R.string.misc_blocked_export)) }
             },
             dismissButton = { TextButton(onClick = { openReport = null }) { Text(stringResource(R.string.misc_blocked_close)) } },

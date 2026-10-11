@@ -40,6 +40,8 @@ class Identity private constructor(
         private const val LEGACY_KEYSET_PREFS_FILE = "__androidx_security_crypto_encrypted_prefs__"
         private const val LEGACY_MASTER_KEY_ALIAS = "_androidx_security_master_key_"
         private const val TAG = "Identity"
+        private const val IDENTITY_OPEN_ATTEMPTS = 4
+        private const val IDENTITY_RETRY_DELAY_MILLIS = 250L
 
         @Volatile private var loaded: Identity? = null
 
@@ -53,12 +55,23 @@ class Identity private constructor(
             val sealedPrivate = prefs.getString(KEY_PRIVATE, null)
             val storedPublic = prefs.getString(KEY_PUBLIC, null)
             if (sealedPrivate != null && storedPublic != null) {
-                try {
-                    return Identity(StorageCipher.box.open(sealedPrivate), Base64.getDecoder().decode(storedPublic))
-                } catch (e: Exception) {
-                    // The Keystore key is gone (e.g. app data copied to another phone): the old
-                    // identity can't be recovered, and refusing to start wouldn't bring it back.
-                    Log.e(TAG, "Stored identity unreadable - creating a new one", e)
+                var attempt = 0
+                while (true) {
+                    try {
+                        return Identity(StorageCipher.box.open(sealedPrivate), Base64.getDecoder().decode(storedPublic))
+                    } catch (e: Exception) {
+                        if (SealedBox.isUnrecoverable(e)) {
+                            // The Keystore key is gone (e.g. app data copied to another phone): the old
+                            // identity can't be recovered, and refusing to start wouldn't bring it back.
+                            Log.e(TAG, "Stored identity unreadable - creating a new one", e)
+                            break
+                        }
+                        // A Keystore hiccup must not cost the user their identity (and with it every
+                        // contact's trust): retry, and fail loudly rather than silently replace it.
+                        if (++attempt >= IDENTITY_OPEN_ATTEMPTS) throw IllegalStateException("Keystore unavailable", e)
+                        Log.w(TAG, "Keystore failed opening the identity, retrying", e)
+                        Thread.sleep(IDENTITY_RETRY_DELAY_MILLIS)
+                    }
                 }
             }
 

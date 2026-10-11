@@ -30,13 +30,23 @@ class ChatHistoryStore(context: Context) {
     private val box: SealedBox by lazy { StorageCipher.box }
 
     fun messagesFor(peerId: String): List<ChatMessage> = synchronized(lock) {
-        val stored = read(peerId) ?: return emptyList()
-        keep(peerId, stored, ChatHistoryRetention.apply(stored, cutoffMillis(), MAX_MESSAGES_PER_PEER))
+        try {
+            val stored = read(peerId) ?: return emptyList()
+            keep(peerId, stored, ChatHistoryRetention.apply(stored, cutoffMillis(), MAX_MESSAGES_PER_PEER))
+        } catch (e: KeystoreBusy) {
+            emptyList()
+        }
     }
 
     fun append(peerId: String, message: ChatMessage): Unit = synchronized(lock) {
-        val messages = messagesFor(peerId) + message
-        keep(peerId, messages, ChatHistoryRetention.apply(messages, cutoffMillis(), MAX_MESSAGES_PER_PEER), changed = true)
+        try {
+            val messages = (read(peerId) ?: emptyList()) + message
+            keep(peerId, messages, ChatHistoryRetention.apply(messages, cutoffMillis(), MAX_MESSAGES_PER_PEER), changed = true)
+        } catch (e: Exception) {
+            // Never overwrite a history we merely couldn't open right now; this one message
+            // isn't saved, the chat itself goes on.
+            Log.w(TAG, "Couldn't save a message to the history", e)
+        }
     }
 
     /** Stores [kept] if it differs from [all] (or [changed] says [all] itself is new), deleting
@@ -57,7 +67,7 @@ class ChatHistoryStore(context: Context) {
 
     /** Records that the peer confirmed receiving our message [id] (see ChatEnvelope.Ack). */
     fun markDelivered(peerId: String, id: String): Unit = synchronized(lock) {
-        val messages = read(peerId) ?: return
+        val messages = try { read(peerId) } catch (e: KeystoreBusy) { null } ?: return
         if (messages.none { it.fromMe && it.id == id && !it.delivered }) return
         write(peerId, messages.map { if (it.fromMe && it.id == id) it.copy(delivered = true) else it })
     }
@@ -84,7 +94,8 @@ class ChatHistoryStore(context: Context) {
         profile.historyRetentionDays.takeIf { it > 0 }?.let { System.currentTimeMillis() - it * DAY_MILLIS }
 
     /** @return null if nothing is stored, or what's stored can't be read any more (e.g. the
-     *  Keystore key is gone after the data was moved to another phone) - then it's dropped. */
+     *  Keystore key is gone after the data was moved to another phone) - then it's dropped.
+     *  @throws KeystoreBusy if the Keystore failed only for now: the history stays as it is. */
     private fun read(peerId: String): List<ChatMessage>? {
         val raw = prefs.getString(peerId, null) ?: return null
         return try {
@@ -94,9 +105,13 @@ class ChatHistoryStore(context: Context) {
                 ChatMessageJson.decode(raw).also { write(peerId, it) } // written before encryption existed
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Dropping unreadable history", e)
-            clear(peerId)
-            null
+            if (SealedBox.isUnrecoverable(e)) {
+                Log.w(TAG, "Dropping unreadable history", e)
+                clear(peerId)
+                null
+            } else {
+                throw KeystoreBusy(e)
+            }
         }
     }
 
@@ -173,3 +188,5 @@ internal object ChatMessageJson {
         }
     }
 }
+
+private class KeystoreBusy(cause: Throwable) : Exception("Keystore failed reading history", cause)

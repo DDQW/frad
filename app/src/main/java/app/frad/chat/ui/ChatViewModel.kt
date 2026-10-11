@@ -127,6 +127,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val deviceFingerprint: String,
         val pseudonym: String,
         val messages: List<ChatMessage>,
+        val staticKey: ByteArray? = null,
     )
 
     private val _endedChat = MutableStateFlow<EndedChat?>(null)
@@ -146,7 +147,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     open = null
                     // Blocked or reported from inside the chat: nothing left to do with them.
                     if (!blockList.isBlocked(ended.remotePeerId)) {
-                        _endedChat.value = EndedChat(ended.remotePeerId, ended.remoteDeviceFingerprint, ended.remotePseudonym, ended.messages)
+                        _endedChat.value = EndedChat(
+                            ended.remotePeerId,
+                            ended.remoteDeviceFingerprint,
+                            ended.remotePseudonym,
+                            ended.messages,
+                            ended.remoteStaticKey.takeIf { it.isNotEmpty() },
+                        )
                     }
                 }
             }
@@ -156,7 +163,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun saveEndedChat() {
         val ended = _endedChat.value ?: return
         _endedChat.value = null
-        contactStore.save(ended.peerId, ended.pseudonym)
+        contactStore.save(ended.peerId, ended.pseudonym, ended.staticKey)
         // The texts are still in memory; the files went with the chat (see MediaFileStore).
         historyStore.backfillIfEmpty(ended.peerId, ended.messages.filter { it.kind == app.frad.chat.chat.MessageKind.TEXT })
     }
@@ -453,10 +460,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun isContactSaved(peerId: String): Boolean = contactStore.isSaved(peerId)
 
     fun saveContact(peerId: String, alias: String) {
-        contactStore.save(peerId, alias)
+        val current = state.value
+        // Their long-term key lets the two find each other again later (ContactRendezvous).
+        val staticKey = (current as? ChatUiState.Chatting)
+            ?.takeIf { it.remotePeerId == peerId }
+            ?.remoteStaticKey?.takeIf { it.isNotEmpty() }
+        contactStore.save(peerId, alias, staticKey)
         // Backfill this session's messages (sent/received before the save happened, so the
         // active controller hadn't started persisting them yet) into their history.
-        val current = state.value
         if (current is ChatUiState.Chatting && current.remotePeerId == peerId) {
             historyStore.backfillIfEmpty(peerId, current.messages)
         }
