@@ -297,7 +297,11 @@ class WideRangeChatController(
         discoveryJob?.cancel(); discoveryJob = null
         incomingStreamJob?.cancel(); incomingStreamJob = null
         findPeersJob?.cancel(); findPeersJob = null
+        nodeExchangeJob?.cancel(); nodeExchangeJob = null
     }
+
+    /** Swaps server lists with the bootstrap servers while the node runs (see NodeDirectory). */
+    private var nodeExchangeJob: Job? = null
 
     private fun startDiscoveryCollectors(topic: String) {
         // Never two collectors on the same flows: the second would close every stream the first
@@ -308,6 +312,15 @@ class WideRangeChatController(
         }
         incomingStreamJob = scope.launch {
             node.incomingStreams().collect { (protocolId, stream) -> onIncomingStream(protocolId, stream) }
+        }
+        node.setKnownNodes(nodeDirectory.publicForSharing())
+        nodeExchangeJob = scope.launch {
+            while (isActive) {
+                node.exchangeNodesWithBootstrapPeers().onSuccess(nodeDirectory::addLearned)
+                nodeDirectory.addLearned(node.takeLearnedNodes())
+                node.setKnownNodes(nodeDirectory.publicForSharing())
+                delay(NODE_EXCHANGE_INTERVAL_MILLIS)
+            }
         }
         findPeersJob = scope.launch {
             // A single DHT lookup is one-shot, unlike BLE's continuous scan - re-run it on an
@@ -840,6 +853,7 @@ class WideRangeChatController(
         private const val FIND_PEERS_INTERVAL_MILLIS = 30_000L
         private const val PEER_TTL_MILLIS = 3 * FIND_PEERS_INTERVAL_MILLIS
         private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
+        private const val NODE_EXCHANGE_INTERVAL_MILLIS = 10 * 60_000L
         /** How long a transfer stream may wait for the offer it belongs to. */
         private const val EARLY_TRANSFER_STREAM_MILLIS = 15_000L
         private const val SEEN_PROOF_OF_WORK_CAPACITY = 512
