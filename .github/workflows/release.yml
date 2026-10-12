@@ -5,6 +5,7 @@ name: Release
 #     current build, so there's always an up-to-date APK to grab.
 #   - pushing a version tag (vX.Y.Z) additionally cuts a proper numbered
 #     release for that tag.
+#   - a pull request into master only builds it, as a check.
 
 on:
   push:
@@ -14,6 +15,10 @@ on:
     # A crawler update of the node list (nodes/) changes nothing in the app, so it
     # doesn't re-publish "latest". Tag pushes ignore path filters, so releases still run.
     paths-ignore: ['nodes/**']
+  # Builds (but never publishes - see the steps' `if`s) the release APK for a pull request
+  # into master, so a broken release build shows up before the merge.
+  pull_request:
+    branches: [master]
 
 jobs:
   build-and-release:
@@ -29,8 +34,29 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The wide-range (internet) layer is the go-libp2p binding built by gomobile - without it
+      # the APK falls back to the stub and FRAD only works over Bluetooth. Same steps as the
+      # android-real-p2p job in android-ci.yml.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: p2p-go/go.mod
+          cache-dependency-path: p2p-go/go.sum
+
+      - name: Use the runner's preinstalled NDK
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            echo "::error::No Android NDK on this runner (ANDROID_NDK_LATEST_HOME/ANDROID_NDK_HOME unset)"
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      - name: Build the go-libp2p binding
+        run: ./gradlew gomobileBind --no-daemon
 
       - name: Unit tests
         run: ./gradlew test --no-daemon
@@ -57,8 +83,15 @@ jobs:
           FRAD_RELEASE_KEY_PASSWORD: ${{ secrets.FRAD_RELEASE_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
+      - name: Check the APK carries the Go library
+        run: |
+          if ! unzip -l app/build/outputs/apk/release/app-release.apk | grep -q 'lib/arm64-v8a/libgojni.so'; then
+            echo "::error::app-release.apk doesn't contain libgojni.so - the stub was built instead of the real binding"
+            exit 1
+          fi
+
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk "FRAD-${{ github.ref_name }}.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "FRAD-${{ github.head_ref || github.ref_name }}.apk"
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/')
