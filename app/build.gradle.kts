@@ -170,7 +170,7 @@ dependencies {
     // Local unit tests run against the real JDK, not a device, so the Android SDK's org.json
     // classes (which BleChatController/ChatHistoryStore use) are stub-only there; this real
     // implementation shadows those stubs so ChatMessageJson can be tested directly.
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
