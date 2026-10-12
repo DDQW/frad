@@ -47,6 +47,9 @@
     <!-- Wide-range discovery/chat/file-transfer (M4) - the go-libp2p layer. M1-M3 needed no
          internet access at all; this is the first FRAD feature that does. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wide-range: Android 11+ hides the network interfaces from Go, so the app reads its own
+         addresses from ConnectivityManager and hands them to the libp2p node. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- LocalBleService: keeps local BLE discovery/chat running in the background when
          Profile.alwaysVisible is on (default), via a real foreground service with a persistent
@@ -56,10 +59,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" tools:targetApi="34" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" tools:targetApi="33" />
+    <!-- BootReceiver: restores Profile.alwaysVisible after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".FradApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -68,10 +75,19 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Frad">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- frad://node?addr=... - bootstrap/relay node addresses shared by link or QR code
+                 (see wideradius/NodeLinks.kt); only ever added after the user confirms. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="frad" android:host="node" />
             </intent-filter>
         </activity>
 
@@ -79,6 +95,14 @@
             android:name=".ble.LocalBleService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".ble.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Lets a received file (M3) be handed to another app via ACTION_VIEW without
              exposing the app's private storage directly. -->

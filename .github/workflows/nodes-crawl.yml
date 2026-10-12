@@ -1,0 +1,89 @@
+name: Node list crawler
+
+# Keeps nodes/nodes.txt - the official list of FRAD servers - current: crawls
+# the server network (p2p-go/cmd/nodecrawl) and commits the result to master
+# if anything changed. See nodes/README.md for the listing rules.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two crawls racing to push would just make one of them fail.
+concurrency:
+  group: nodes-crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: p2p-go/go.mod
+          cache-dependency-path: p2p-go/go.sum
+
+      - name: Crawl
+        working-directory: p2p-go
+        run: go run ./cmd/nodecrawl -dir ../nodes
+
+      # The crawler writes byte-identical files when nothing changed, so this
+      # only commits real changes.
+      - name: Commit updated list
+        run: |
+          if [ -z "$(git status --porcelain -- nodes/)" ]; then
+            echo "Node list unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nodes/
+          git commit -m "Update node list (crawler)"
+          git push origin HEAD:master
+
+      # Copies of the list outside GitHub, so it outlives this repository (see
+      # nodes/README.md, "Mirrors"). Each one runs only once its token is set as
+      # a repository secret; runs even when the list didn't change, so a mirror
+      # that missed a run catches up.
+      - name: Mirror the list to Codeberg and GitLab
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          MIRROR_REPO: ${{ vars.NODES_MIRROR_REPO || 'DDQW/frad-nodes' }}
+        run: |
+          mirror() {
+            name="$1" url="$2"
+            dir="$(mktemp -d)"
+            git init -q -b main "$dir"
+            cp nodes/nodes.txt "$dir/nodes.txt"
+            printf 'Copy of https://github.com/DDQW/frad/blob/master/nodes/nodes.txt, the official list of FRAD servers.\nUpdated automatically; see nodes/README.md there.\n' > "$dir/README.md"
+            git -C "$dir" add nodes.txt README.md
+            git -C "$dir" -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Update node list"
+            # A single-commit history, force-pushed: the mirror only ever needs the current list.
+            if git -C "$dir" push -q --force "$url" main 2>/dev/null; then
+              echo "Mirrored to $name."
+            else
+              echo "::warning::Couldn't push the node list to $name ($MIRROR_REPO)."
+            fi
+            rm -rf "$dir"
+          }
+          if [ -n "$CODEBERG_TOKEN" ]; then
+            mirror Codeberg "https://oauth2:${CODEBERG_TOKEN}@codeberg.org/${MIRROR_REPO}.git"
+          else
+            echo "CODEBERG_TOKEN not set - skipping the Codeberg mirror."
+          fi
+          if [ -n "$GITLAB_TOKEN" ]; then
+            mirror GitLab "https://oauth2:${GITLAB_TOKEN}@gitlab.com/${MIRROR_REPO}.git"
+          else
+            echo "GITLAB_TOKEN not set - skipping the GitLab mirror."
+          fi

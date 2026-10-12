@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,15 +13,47 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-type collectingPeers struct{ found []string }
+// The listeners are called from libp2p's own goroutines while the test polls them, so both
+// guard their slices with a mutex (go test -race flags the unguarded version).
+type collectingPeers struct {
+	mu    sync.Mutex
+	found []string
+}
 
-func (c *collectingPeers) OnPeerFound(peerId string)       { c.found = append(c.found, peerId) }
+func (c *collectingPeers) OnPeerFound(peerId string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.found = append(c.found, peerId)
+}
 func (c *collectingPeers) OnDiscoveryError(message string) { fmt.Println("discovery error:", message) }
 
-type collectingStreams struct{ incoming []string }
+func (c *collectingPeers) first() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.found) == 0 {
+		return "", false
+	}
+	return c.found[0], true
+}
+
+type collectingStreams struct {
+	mu       sync.Mutex
+	incoming []string
+}
 
 func (c *collectingStreams) OnIncomingStream(protocolId string, peerId string, streamHandle string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.incoming = append(c.incoming, streamHandle)
+}
+
+func (c *collectingStreams) first() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.incoming) == 0 {
+		return "", false
+	}
+	return c.incoming[0], true
 }
 
 func seed() []byte {
@@ -94,7 +127,12 @@ func TestTwoHostsRendezvousViaBootstrapAndChat(t *testing.T) {
 	}
 
 	deadline := time.After(20 * time.Second)
-	for len(bPeers.found) == 0 {
+	var foundPeer string
+	for {
+		if p, ok := bPeers.first(); ok {
+			foundPeer = p
+			break
+		}
 		select {
 		case <-deadline:
 			t.Fatal("B never found A via DHT rendezvous through the bootstrap node")
@@ -102,7 +140,7 @@ func TestTwoHostsRendezvousViaBootstrapAndChat(t *testing.T) {
 		}
 	}
 
-	stream, err := b.OpenStream(bPeers.found[0], ChatProtocolID)
+	stream, err := b.OpenStream(foundPeer, ChatProtocolID)
 	if err != nil {
 		t.Fatalf("B opening stream to A: %v", err)
 	}
@@ -111,14 +149,19 @@ func TestTwoHostsRendezvousViaBootstrapAndChat(t *testing.T) {
 	}
 
 	deadline = time.After(5 * time.Second)
-	for len(aStreams.incoming) == 0 {
+	var handle string
+	for {
+		if h, ok := aStreams.first(); ok {
+			handle = h
+			break
+		}
 		select {
 		case <-deadline:
 			t.Fatal("A never observed the incoming stream from B")
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	incoming, err := a.AcceptStream(aStreams.incoming[0])
+	incoming, err := a.AcceptStream(handle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,4 +172,49 @@ func TestTwoHostsRendezvousViaBootstrapAndChat(t *testing.T) {
 	if string(buf) != "hello" {
 		t.Fatalf("expected 'hello', got %q", string(buf))
 	}
+}
+
+func TestLookupPeersFindsAnAdvertiserAndStopAdvertisingIsSafe(t *testing.T) {
+	bootstrapAddrs := startTestBootstrap(t)
+	newStarted := func() *Host {
+		h, err := NewHost(&Config{ListenPort: 0, IdentitySeed: seed(), BootstrapPeers: bootstrapAddrs}, &collectingPeers{}, &collectingStreams{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { h.Stop() })
+		if err := h.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	a, b := newStarted(), newStarted()
+	time.Sleep(1 * time.Second)
+
+	topic := "frad/contact/v1/test"
+	if err := a.StartAdvertising(topic); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.StartAdvertising(topic); err != nil { // already running: a no-op
+		t.Fatal(err)
+	}
+	time.Sleep(1 * time.Second)
+
+	var found string
+	for attempt := 0; attempt < 10 && found == ""; attempt++ {
+		got, err := b.LookupPeers(topic, 5000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found = got
+		if found == "" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if found != a.LocalPeerId() {
+		t.Fatalf("expected to find exactly %s, got %q", a.LocalPeerId(), found)
+	}
+
+	a.StopAdvertising(topic)
+	a.StopAdvertising(topic) // twice is fine
+	a.StopAdvertising("never/advertised")
 }

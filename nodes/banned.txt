@@ -1,0 +1,10 @@
+# FRAD official node list - banned entries (see README.md).
+#
+# Never listed in nodes.txt and never contacted by the crawler, even if pinned.
+# One entry per line:
+#   12D3KooW...                             a peer id: bans that server
+#   /ip4/203.0.113.7/tcp/4001/p2p/12D3K...  a full node address: bans its peer id
+#   /ip4/203.0.113.7                        an address prefix: bans every node
+#                                           address starting with it (all ports)
+# This only governs the official list; every server and app still checks
+# nodes for itself. Say why in the commit message that adds a ban.

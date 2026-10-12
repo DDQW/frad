@@ -1,32 +1,55 @@
 package app.frad.chat.ble
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.AdvertiseCallback
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import app.frad.chat.R
+import app.frad.chat.chat.ChatConnection
 import app.frad.chat.chat.ChatController
+import app.frad.chat.chat.ChatEnvelope
+import app.frad.chat.chat.ChatEvent
 import app.frad.chat.chat.ChatMessage
 import app.frad.chat.chat.ChatUiState
+import app.frad.chat.chat.FileOffer
+import app.frad.chat.chat.FrameTransport
+import app.frad.chat.chat.OpenChat
+import app.frad.chat.chat.MAX_MESSAGE_CHARS
 import app.frad.chat.chat.MAX_TRANSFER_FILE_BYTES
 import app.frad.chat.chat.MessageKind
 import app.frad.chat.contacts.ChatHistoryStore
 import app.frad.chat.contacts.ContactStore
-import app.frad.chat.crypto.ChatSession
 import app.frad.chat.crypto.Identity
+import app.frad.chat.crypto.TransferCipher
+import app.frad.chat.media.FileTypeCheck
+import app.frad.chat.wideradius.NodeDirectory
 import app.frad.chat.data.MediaFileStore
 import app.frad.chat.pairing.NearbyPeer
 import app.frad.chat.pairing.RandomMatcher
 import app.frad.chat.pairing.SignalStrength
 import app.frad.chat.profile.Profile
+import app.frad.chat.profile.ProfilePhoto
 import app.frad.chat.profile.ProfileEnvelope
 import app.frad.chat.safety.BlockList
 import app.frad.chat.safety.Cooldown
@@ -34,14 +57,14 @@ import app.frad.chat.safety.DeviceFingerprint
 import app.frad.chat.safety.ReportFlow
 import app.frad.chat.wifidirect.WfdCredentials
 import app.frad.chat.wifidirect.WifiDirectTransferManager
-import org.json.JSONObject
 
 /**
- * Ties the BLE transport ([BlePeripheralServer] + [BleCentralClient]), the
- * Noise handshake ([ChatSession]), matching ([RandomMatcher]) and the safety
- * layer ([BlockList]/[Cooldown]/[ReportFlow]) into the single state machine the
- * UI drives. One chat at a time in M1 — see the milestone plan for why.
+ * Ties the BLE transport ([BlePeripheralServer] + [BleCentralClient]), the shared chat protocol
+ * ([ChatConnection]), matching ([RandomMatcher]) and the safety layer
+ * ([BlockList]/[Cooldown]/[ReportFlow]) into the single state machine the UI drives. One chat at
+ * a time in M1 — see the milestone plan for why.
  */
+@OptIn(ExperimentalCoroutinesApi::class) // limitedParallelism
 class BleChatController(
     private val context: Context,
     private val identity: Identity,
@@ -55,7 +78,7 @@ class BleChatController(
     private val cooldown = Cooldown()
     private val reportFlow = ReportFlow(context, blockList)
     private val matcher = RandomMatcher()
-    private val deviceFingerprint = DeviceFingerprint.compute(context)
+    private val deviceSecret = DeviceFingerprint.deviceSecret(context)
 
     private val peripheral = BlePeripheralServer(context, this)
     private val central = BleCentralClient(context, this)
@@ -66,51 +89,198 @@ class BleChatController(
     // the M3 milestone plan. Below that, file transfer is simply unavailable.
     private val transferManager: WifiDirectTransferManager? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiDirectTransferManager(context) else null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Everything this controller does runs on this one serial dispatcher: BLE callbacks (which
+    // arrive on arbitrary binder threads), calls from the UI and the transfer/timeout coroutines
+    // all hop onto it first, so none of the state below needs locking of its own. The handler is
+    // the last line of defense - a failure is logged, never allowed to take down the whole app.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default.limitedParallelism(1) +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "unexpected error", e) },
+    )
 
     private val _state = MutableStateFlow<ChatUiState>(ChatUiState.Idle)
     override val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     /** Non-null while a file send/receive is in flight; null the rest of the time. */
+    private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    override val notices: SharedFlow<String> = _notices.asSharedFlow()
+
+    private val openChat by lazy {
+        OpenChat(
+            _state, scope, contactStore, historyStore,
+            canReceiveFile = { transferManager != null && _transferStatus.value == null },
+            ownPhoto = { ProfilePhoto.bytesOrNull(context) },
+            photoOnRequest = { profile.photoOnRequest },
+            matchFilter = { profile.matchFilter },
+            endChat = { reason -> endActive(endReasonText(reason)) },
+        )
+    }
+
     private val _transferStatus = MutableStateFlow<String?>(null)
     override val transferStatus: StateFlow<String?> = _transferStatus.asStateFlow()
+    private val _transferProgress = MutableStateFlow<Float?>(null)
+    override val transferProgress: StateFlow<Float?> = _transferProgress.asStateFlow()
 
     override val fileTransferAvailable: Boolean get() = transferManager != null
 
-    /** After the Noise handshake finishes, both sides immediately exchange two more encrypted
-     *  messages — their device fingerprint, then their pseudonym — before the chat is considered
-     *  open. The fingerprint round trip lets each side re-check the other against [blockList] by
-     *  device (not just by identity key) before revealing anything human-readable; see M5. */
-    private enum class HandshakeStep { EXPECT_MESSAGE_1, EXPECT_MESSAGE_2, EXPECT_MESSAGE_3, EXPECT_DEVICE_ID, EXPECT_PROFILE, READY }
+    /** One GATT link, in either direction, and the chat running over it. */
+    private class Link(val address: String, val isOutbound: Boolean, val chat: ChatConnection)
 
-    private class Connection(val session: ChatSession, val isOutbound: Boolean) {
-        var step: HandshakeStep = if (session.isReady) HandshakeStep.READY
-        else if (isOutbound) HandshakeStep.EXPECT_MESSAGE_2 else HandshakeStep.EXPECT_MESSAGE_1
-        var remoteDeviceFingerprint: String? = null
-    }
-
-    // BLE callbacks (peripheral GATT server, central GATT client, scan results) can each
-    // land on their own binder thread, so these shared maps need to tolerate concurrent
-    // access; synchronizedMap is a coarse but adequate mitigation for M1's single-active-
-    // connection scope. A later milestone should route everything through one serial
-    // dispatcher instead of relying on this.
     // Keyed by sessionId (our own app-level id, stable for as long as a peer's peripheral keeps
     // running), not by the underlying BLE MAC address - Android can rotate a device's advertised
     // address independently of that, which previously made the same physical peer reappear under
     // a new key and pile up as a phantom extra "found" device instead of updating in place.
-    private val discoveredBySessionId = java.util.Collections.synchronizedMap(mutableMapOf<String, NearbyPeer>())
-    private val addressBySessionId = java.util.Collections.synchronizedMap(mutableMapOf<String, String>())
-    private val connections = java.util.Collections.synchronizedMap(mutableMapOf<String, Connection>())
+    private val discoveredBySessionId = mutableMapOf<String, NearbyPeer>()
+    private val addressBySessionId = mutableMapOf<String, String>()
+    private val links = mutableMapOf<String, Link>()
     private var activeAddress: String? = null
     private var browsing = false
+
+    /** Why others can't find us right now, if advertising failed - see [onAdvertisingFailed]. */
+    private var advertisingWarning: String? = null
+
+    private val bluetoothAdapter: BluetoothAdapter? =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+
+    private fun bluetoothOn(): Boolean = bluetoothAdapter?.isEnabled == true
+
+    /** Turning Bluetooth (or airplane mode) off tears down the GATT server, advertiser and scan
+     *  underneath us; without this the app would keep claiming to be visible while being deaf,
+     *  and stay that way after Bluetooth comes back. */
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val newState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            scope.launch { onBluetoothStateChanged(newState) }
+        }
+    }
+
+    init {
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(bluetoothStateReceiver, filter)
+        }
+    }
+
+    /** Releases what [init] registered; the controller can't be used afterwards. */
+    fun close() {
+        runCatching { context.unregisterReceiver(bluetoothStateReceiver) }
+        setBrowsing(false)
+    }
+
+    private fun bluetoothOffReason(): String = context.getString(R.string.ctl_paused_bluetooth_off)
+
+    private fun browsingState(): ChatUiState =
+        if (!bluetoothOn()) ChatUiState.Paused(bluetoothOffReason())
+        else ChatUiState.Browsing(discoveredBySessionId.values.toList(), advertisingWarning)
+
+    private fun onBluetoothStateChanged(newState: Int) {
+        if (!browsing) return
+        when (newState) {
+            BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                if (_state.value is ChatUiState.Paused) return
+                Log.d(TAG, "Bluetooth going off - pausing")
+                endActive(context.getString(R.string.ctl_ended_bluetooth_turned_off))
+                central.stopScanning()
+                peripheral.stop()
+                _state.value = ChatUiState.Paused(bluetoothOffReason())
+            }
+            BluetoothAdapter.STATE_ON -> {
+                if (_state.value !is ChatUiState.Paused) return
+                Log.d(TAG, "Bluetooth back on - resuming")
+                startRadios()
+            }
+        }
+    }
+
+    /** (Re)starts advertising and scanning from a clean peer list. */
+    private fun startRadios() {
+        discoveredBySessionId.clear()
+        addressBySessionId.clear()
+        advertisingWarning = null
+        peripheral.stop()
+        startAdvertisingSession()
+        if (uiVisible) central.startScanning()
+        _state.value = browsingState()
+    }
+
+    /** Whether FRAD is on screen. Scanning (finding others) only matters then - nobody can pick a
+     *  chat partner from a list they can't see - so in the background only advertising and the
+     *  GATT server run (others can still find and message us), which costs far less battery. */
+    @Volatile private var uiVisible = false
+
+    /** Whether FRAD is on screen (see [setUiVisible]) - e.g. to skip a chat-request notification. */
+    val isUiVisible: Boolean get() = uiVisible
+
+    override fun setUiVisible(visible: Boolean) {
+        scope.launch {
+            if (visible == uiVisible) return@launch
+            uiVisible = visible
+            if (!browsing || !bluetoothOn() || activeAddress != null) return@launch
+            if (visible) {
+                central.startScanning()
+            } else {
+                central.stopScanning()
+            }
+        }
+    }
+
+    /** Runs on this controller's dispatcher when a time-limited visibility (see
+     *  [Profile.visibleUntilMillis]) runs out - [LocalBleService] drops its notification then. */
+    var onVisibilityExpired: (() -> Unit)? = null
+
+    private fun visibilityExpired(): Boolean {
+        val until = profile.visibleUntilMillis
+        return until > 0 && System.currentTimeMillis() >= until
+    }
 
     /** Guards against a stuck [ChatUiState.Connecting]/[ChatUiState.Handshaking]: if a peer
      *  drops off mid-handshake, or a connection attempt never completes, this brings the UI
      *  back to browsing instead of hanging forever and forcing the user to restart the app. */
     private var connectionTimeoutJob: Job? = null
 
+    /** Runs while browsing: [forgetStalePeers] and [rotateSessionId] on their own timers. */
+    private var browsingJob: Job? = null
+
+    private fun newLink(address: String, isOutbound: Boolean): Link {
+        val transport = object : FrameTransport {
+            override suspend fun send(frame: ByteArray) {
+                if (isOutbound) central.sendFrame(address, frame) else peripheral.sendFrame(address, frame)
+            }
+
+            override fun close() {
+                if (isOutbound) central.disconnect(address) else peripheral.disconnectDevice(address)
+            }
+        }
+        val chat = ChatConnection(
+            isInitiator = isOutbound,
+            identity = identity,
+            transport = transport,
+            deviceFingerprintFor = { DeviceFingerprint.forPeer(deviceSecret, it) },
+            localIsAdult = profile.isAdult,
+            localProfile = { ProfileEnvelope.encode(context, profile) },
+            // Also refuses whoever we just finished chatting with, on both sides - see Cooldown.justChatted.
+            isBlocked = { blockList.isBlocked(it) || cooldown.justChatted(it) },
+        )
+        return Link(address, isOutbound, chat).also { links[address] = it }
+    }
+
+    private fun activeLink(): Link? = activeAddress?.let { links[it] }
+
+    private fun newSessionId(): ByteArray = Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES)
+
     private fun startAdvertisingSession() {
-        peripheral.start(Random.nextBytes(GattProfile.MAX_ADVERTISED_SESSION_ID_BYTES))
+        peripheral.start(newSessionId())
+    }
+
+    /** The advertised session id is what scanners see; if it stayed the same for hours while
+     *  "always visible" is on, it would link every one of Android's periodic Bluetooth address
+     *  rotations together and make this phone trackable. Swapped regularly - but never while a
+     *  chat is being set up or running, since the peer may still be dialing the old one. */
+    private fun rotateSessionId() {
+        if (activeAddress == null) peripheral.rotateSessionId(newSessionId())
     }
 
     private fun armConnectionTimeout(address: String) {
@@ -119,7 +289,7 @@ class BleChatController(
             delay(CONNECTION_TIMEOUT_MILLIS)
             if (activeAddress == address) {
                 Log.w(TAG, "connection timed out, addr=$address state=${_state.value}")
-                endActiveConnection("connection timed out")
+                endActive(context.getString(R.string.ctl_ended_connection_timed_out))
             }
         }
     }
@@ -129,22 +299,48 @@ class BleChatController(
         connectionTimeoutJob = null
     }
 
-    /** The user-facing "make me discoverable" toggle. Off by default and never
-     *  persisted across app restarts — see the safety-by-design notes in the plan. */
+    /** The user-facing "make me discoverable" toggle. */
     override fun setBrowsing(enabled: Boolean) {
-        if (enabled == browsing) return
-        browsing = enabled
-        if (enabled) {
-            discoveredBySessionId.clear()
-            addressBySessionId.clear()
-            startAdvertisingSession()
-            central.startScanning()
-            _state.value = ChatUiState.Browsing(emptyList())
-        } else {
-            central.stopScanning()
-            peripheral.stop()
-            endActiveConnection("stopped browsing")
-            _state.value = ChatUiState.Idle
+        scope.launch {
+            if (enabled == browsing) return@launch
+            browsing = enabled
+            if (enabled) {
+                if (bluetoothOn()) startRadios() else _state.value = ChatUiState.Paused(bluetoothOffReason())
+                browsingJob = scope.launch {
+                    launch {
+                        while (true) {
+                            delay(STALE_PEER_CHECK_MILLIS)
+                            forgetStalePeers()
+                        }
+                    }
+                    launch {
+                        while (true) {
+                            delay(SESSION_ROTATION_MILLIS)
+                            rotateSessionId()
+                        }
+                    }
+                    launch {
+                        while (true) {
+                            delay(VISIBILITY_CHECK_MILLIS)
+                            // Never in the middle of a chat - the limit is about being found.
+                            if (visibilityExpired() && activeAddress == null) {
+                                profile.visibleUntilMillis = 0
+                                setBrowsing(false)
+                                _notices.tryEmit(context.getString(R.string.ctl_notice_visibility_expired))
+                                onVisibilityExpired?.invoke()
+                                break
+                            }
+                        }
+                    }
+                }
+            } else {
+                browsingJob?.cancel()
+                browsingJob = null
+                central.stopScanning()
+                peripheral.stop()
+                endActive(context.getString(R.string.ctl_ended_stopped_browsing))
+                _state.value = ChatUiState.Idle
+            }
         }
     }
 
@@ -163,72 +359,227 @@ class BleChatController(
      *  and the other device never even seeing a connection attempt. Always connecting is the
      *  better trade: the common case works every time, and the rare double-tap case just costs
      *  one 15s timeout instead of hanging indefinitely. */
+    /** A random peer that isn't cooling down from a recent request, or null - after telling the
+     *  user why nothing happens. */
+    private fun pickPeer(candidates: List<NearbyPeer>): NearbyPeer? {
+        if (candidates.isEmpty()) {
+            _notices.tryEmit(context.getString(R.string.ctl_notice_nobody_around))
+            return null
+        }
+        return matcher.pickRandomPeer(candidates, excluding = cooldown.coolingDown()) ?: run {
+            val seconds = (Cooldown.DEFAULT_MIN_INTERVAL_MILLIS / 1000).toInt()
+            _notices.tryEmit(context.resources.getQuantityString(R.plurals.ctl_notice_asked_everyone, seconds, seconds))
+            null
+        }
+    }
+
     override fun requestRandomChat() {
-        if (_state.value !is ChatUiState.Browsing) return
-        val picked = matcher.pickRandomPeer(discoveredBySessionId.values.toList()) ?: return
-        if (!cooldown.canRequest(picked.sessionId)) return
-        val address = addressBySessionId[picked.sessionId] ?: return
+        scope.launch {
+            if (_state.value !is ChatUiState.Browsing) return@launch
+            val picked = pickPeer(discoveredBySessionId.values.toList()) ?: return@launch
+            val address = addressBySessionId[picked.sessionId] ?: return@launch
 
-        Log.d(TAG, "requestRandomChat -> picked sessionId=${picked.sessionId} addr=$address")
-        cooldown.recordRequest(picked.sessionId)
-        activeAddress = address
-        _state.value = ChatUiState.Connecting(picked)
-        armConnectionTimeout(address)
+            Log.d(TAG, "requestRandomChat -> picked sessionId=${picked.sessionId} addr=$address")
+            cooldown.recordRequest(picked.sessionId)
+            activeAddress = address
+            _state.value = ChatUiState.Connecting(picked)
+            armConnectionTimeout(address)
 
-        central.stopScanning() // one conversation at a time
-        peripheral.stop()
-        central.connect(address)
+            central.stopScanning() // one conversation at a time
+            peripheral.stop()
+            central.connect(address)
+        }
+    }
+
+    /** A scan only ever reports who's advertising, never who stopped: drop peers not heard from
+     *  for a while (walked away, went invisible, started a chat elsewhere), so the count shown and
+     *  [requestRandomChat]'s pick stay current. */
+    private fun forgetStalePeers() {
+        val cutoff = System.currentTimeMillis() - PEER_TTL_MILLIS
+        val stale = discoveredBySessionId.filterValues { it.lastSeenAtMillis < cutoff }.keys
+        if (stale.isEmpty()) return
+        stale.forEach {
+            discoveredBySessionId.remove(it)
+            addressBySessionId.remove(it)
+        }
+        if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
     }
 
     override fun sendMessage(text: String) {
-        val address = activeAddress ?: return
-        val connection = connections[address] ?: return
-        if (connection.step != HandshakeStep.READY) return
+        if (text.length > MAX_MESSAGE_CHARS) return
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (!link.chat.isReady) return@launch
+            openChat.sendText(link.chat, text)
+        }
+    }
 
-        sendEnvelope(address, connection, JSONObject().put("k", "txt").put("t", text).toString())
-        appendMessage(ChatMessage(fromMe = true, text = text, atMillis = System.currentTimeMillis()))
+    override fun notifyTyping() {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.sendTyping(link.chat)
+        }
     }
 
     /** Sends [bytes] to the active peer over Wi-Fi Direct once [transferManager] confirms the
      *  peer joined; the BLE channel only ever carries the small offer envelope (network name/
      *  passphrase/metadata), never the file itself. No-op if a transfer is already in flight,
      *  [fileTransferAvailable] is false, or [bytes] exceeds [MAX_TRANSFER_FILE_BYTES]. */
-    override fun sendFile(bytes: ByteArray, fileName: String, mimeType: String) {
-        val manager = transferManager ?: return
-        val address = activeAddress ?: return
-        val connection = connections[address] ?: return
-        if (connection.step != HandshakeStep.READY) return
-        if (_transferStatus.value != null) return
-        if (bytes.size > MAX_TRANSFER_FILE_BYTES) return
-
-        val remotePeerId = connection.session.remotePeerId()
-        val transferKey = connection.session.deriveTransferKey()
-        _transferStatus.value = "Sending $fileName…"
+    override fun sendFile(file: java.io.File, fileName: String, mimeType: String) {
+        val manager = transferManager
+        val size = file.length()
+        if (manager == null || size > MAX_TRANSFER_FILE_BYTES) {
+            file.delete()
+            return
+        }
         scope.launch {
-            val result = manager.hostAndSendFile(bytes, transferKey) { credentials ->
-                sendEnvelope(address, connection, encodeFileOffer(credentials, fileName, mimeType, bytes.size.toLong()))
-            }
-            _transferStatus.value = null
-            result.onSuccess {
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                appendMessage(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = bytes.size.toLong(), localPath = path))
+            var kept = false
+            val job = coroutineContext[Job]
+            try {
+                val link = activeLink() ?: return@launch
+                val remotePeerId = link.chat.remotePeer?.peerId ?: return@launch
+                if (_transferStatus.value != null) return@launch
+                transferJob = job
+                val offer = FileOffer(TransferCipher.newTransferId(), fileName, mimeType, size)
+                if (!askToSend(link, offer)) return@launch
+                val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = true)
+                _transferStatus.value = context.getString(R.string.ctl_transfer_sending, fileName)
+                val result = manager.hostAndSendFile(file, transferKey, onProgress = progressOf(offer.sizeBytes)) { credentials ->
+                    link.chat.send(ChatEnvelope.WfdOffer(offer, networkName = credentials.networkName, passphrase = credentials.passphrase))
+                }
+                result.onSuccess {
+                    val path = mediaFileStore.adopt(remotePeerId, newMessageId(), file).absolutePath
+                    kept = true
+                    openChat.append(fileMessage(fromMe = true, fileName = fileName, mimeType = mimeType, sizeBytes = size, localPath = path))
+                }.onFailure {
+                    if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_sent, fileName))
+                }
+            } finally {
+                if (!kept) file.delete()
+                transferEnded(job)
             }
         }
     }
 
-    private fun receiveFile(connection: Connection, offer: FileOffer) {
+    /** The running file transfer (or request for one), for [cancelTransfer]. */
+    private var transferJob: Job? = null
+
+    private fun progressOf(total: Long): (Long) -> Unit = { done ->
+        _transferProgress.value = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else null
+    }
+
+    private fun transferEnded(job: Job?) {
+        if (transferJob !== job) return
+        transferJob = null
+        _transferStatus.value = null
+        _transferProgress.value = null
+    }
+
+    override fun cancelTransfer() {
+        scope.launch {
+            val job = transferJob ?: return@launch
+            transferEnded(job)
+            job.cancel()
+            _notices.tryEmit(context.getString(R.string.ctl_notice_transfer_cancelled))
+        }
+    }
+
+    /** Asks the peer (see [OpenChat.requestToSend]); true once they've accepted and the chat is
+     *  still the same one. Leaves [_transferStatus] set while waiting, cleared otherwise. */
+    private suspend fun askToSend(link: Link, offer: FileOffer): Boolean {
+        _transferStatus.value = context.getString(R.string.ctl_transfer_waiting_for_accept, offer.fileName)
+        val answer = try {
+            openChat.requestToSend(link.chat, offer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "file request failed", e)
+            OpenChat.FileAnswer.NO_ANSWER
+        } finally {
+            _transferStatus.value = null
+        }
+        if (activeLink() !== link) return false
+        when (answer) {
+            OpenChat.FileAnswer.ACCEPTED -> return true
+            OpenChat.FileAnswer.DECLINED -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_declined, offer.fileName))
+            OpenChat.FileAnswer.NO_ANSWER -> _notices.tryEmit(context.getString(R.string.ctl_notice_file_no_answer, offer.fileName))
+        }
+        return false
+    }
+
+    override fun answerIncomingFile(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.answerFileRequest(link.chat, accept)
+        }
+    }
+
+    override fun requestPhotoSwap() {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.requestPhotoSwap(link.chat)
+        }
+    }
+
+    private fun endReasonText(reason: OpenChat.EndReason): String = context.getString(
+        when (reason) {
+            OpenChat.EndReason.THEY_DECLINED -> R.string.ctl_ended_they_declined
+            OpenChat.EndReason.WE_DECLINED -> R.string.ctl_ended_we_declined
+            OpenChat.EndReason.NO_ANSWER -> R.string.ctl_ended_no_answer
+            OpenChat.EndReason.FILTERED -> R.string.ctl_ended_filtered
+        },
+    )
+
+    override fun answerChatRequest(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.answerChatRequest(link.chat, accept) }
+        }
+    }
+
+    override fun setDisappearTimer(seconds: Long) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) runCatching { openChat.setDisappearTimer(link.chat, seconds) }
+        }
+    }
+
+    override fun answerPhotoSwap(accept: Boolean) {
+        scope.launch {
+            val link = activeLink() ?: return@launch
+            if (link.chat.isReady) openChat.answerPhotoSwap(link.chat, accept)
+        }
+    }
+
+    private fun receiveFile(link: Link, envelope: ChatEnvelope.WfdOffer) {
+        // Only what the user accepted, with the metadata they saw when accepting.
+        val offer = openChat.takeAcceptedFile(envelope.offer.transferId) ?: run {
+            Log.w(TAG, "ignoring file offer nobody accepted")
+            return
+        }
         val manager = transferManager
+        val remotePeerId = link.chat.remotePeer?.peerId ?: return
         if (manager == null || _transferStatus.value != null || offer.sizeBytes > MAX_TRANSFER_FILE_BYTES) return
 
-        val remotePeerId = connection.session.remotePeerId()
-        val transferKey = connection.session.deriveTransferKey()
-        _transferStatus.value = "Receiving ${offer.fileName}…"
-        scope.launch {
-            val result = manager.joinAndReceiveFile(offer.credentials, transferKey, offer.sizeBytes)
-            _transferStatus.value = null
-            result.onSuccess { bytes ->
-                val path = mediaFileStore.write(remotePeerId, newMessageId(), bytes).absolutePath
-                appendMessage(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = offer.mimeType, sizeBytes = offer.sizeBytes, localPath = path))
+        val transferKey = link.chat.transferKey(WFD_TRANSFER_KEY_INFO, offer.transferId, outgoing = false)
+        val credentials = WfdCredentials(networkName = envelope.networkName, passphrase = envelope.passphrase)
+        _transferStatus.value = context.getString(R.string.ctl_transfer_receiving, offer.fileName)
+        transferJob = scope.launch {
+            val job = coroutineContext[Job]
+            val target = mediaFileStore.newIncomingFile(remotePeerId, newMessageId())
+            var received = false
+            try {
+                val result = manager.joinAndReceiveFile(credentials, transferKey, offer.sizeBytes, target, onProgress = progressOf(offer.sizeBytes))
+                result.onSuccess {
+                    received = true
+                    val mimeType = FileTypeCheck.verifiedMimeType(target, offer.mimeType)
+                    openChat.append(fileMessage(fromMe = false, fileName = offer.fileName, mimeType = mimeType, sizeBytes = offer.sizeBytes, localPath = target.absolutePath))
+                }.onFailure {
+                    if (activeLink() === link) _notices.tryEmit(context.getString(R.string.ctl_notice_file_not_received, offer.fileName))
+                }
+            } finally {
+                if (!received) target.delete()
+                transferEnded(job)
             }
         }
     }
@@ -246,221 +597,215 @@ class BleChatController(
 
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
-    private fun sendEnvelope(address: String, connection: Connection, json: String) {
-        val ciphertext = connection.session.encryptMessage(json)
-        if (connection.isOutbound) central.sendFrame(address, ciphertext) else peripheral.sendFrame(address, ciphertext)
-    }
-
-    private data class FileOffer(val credentials: WfdCredentials, val fileName: String, val mimeType: String, val sizeBytes: Long)
-
-    private fun encodeFileOffer(credentials: WfdCredentials, fileName: String, mimeType: String, sizeBytes: Long): String =
-        JSONObject()
-            .put("k", "wfd")
-            .put("ssid", credentials.networkName)
-            .put("pass", credentials.passphrase)
-            .put("name", fileName)
-            .put("mime", mimeType)
-            .put("size", sizeBytes)
-            .toString()
-
-    /** Chat history is only ever written to disk for peers the user chose to save as a
-     *  contact - see [ChatHistoryStore]. */
-    private fun persistIfSaved(remotePeerId: String, message: ChatMessage) {
-        if (contactStore.isSaved(remotePeerId)) historyStore.append(remotePeerId, message)
-    }
-
-    private fun appendMessage(message: ChatMessage) {
-        val current = _state.value
-        if (current is ChatUiState.Chatting) {
-            _state.value = current.copy(messages = current.messages + message)
-            persistIfSaved(current.remotePeerId, message)
-        }
+    /** Files exchanged with someone who isn't a saved contact don't outlive the chat - the same
+     *  rule chat history follows (see [ChatHistoryStore]). */
+    private fun forgetMediaUnlessSaved(peerId: String?) {
+        if (peerId != null && !contactStore.isSaved(peerId)) mediaFileStore.delete(peerId)
     }
 
     override fun endActiveConnection(reason: String) {
+        scope.launch { endActive(reason) }
+    }
+
+    /** [endActiveConnection], for callers already on [scope]'s dispatcher. */
+    private fun endActive(reason: String) {
+        transferJob?.let { job -> transferEnded(job); job.cancel() }
+        activeLink()?.chat?.remotePeer?.peerId?.let(cooldown::recordChatEnded)
+        openChat.end()
+        forgetMediaUnlessSaved(activeLink()?.chat?.remotePeer?.peerId)
         disarmConnectionTimeout()
-        val address = activeAddress
-        if (address != null) {
-            val connection = connections[address]
-            if (connection?.isOutbound == true) central.disconnect(address) else peripheral.disconnectDevice(address)
-            connections.remove(address)
-        }
+        activeAddress?.let { address -> links.remove(address)?.chat?.close() ?: peripheral.disconnectDevice(address) }
         activeAddress = null
         _transferStatus.value = null
         _state.value = ChatUiState.Ended(reason)
-        if (browsing) {
+        if (browsing && bluetoothOn()) {
             // The peer list may now be stale — a peer's session id rotates each time its own
             // peripheral restarts (including right after a connection attempt like this one
             // fails on its end too), so leftover entries here would otherwise just accumulate
             // as phantom "one more device" duplicates rather than being replaced. Start clean
             // and let scanning repopulate it.
-            discoveredBySessionId.clear()
-            addressBySessionId.clear()
-            peripheral.stop()
-            startAdvertisingSession()
-            central.startScanning()
-            _state.value = ChatUiState.Browsing(emptyList())
+            startRadios()
         }
     }
 
     override fun blockActivePeer() {
-        val current = _state.value
-        if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint)
-        endActiveConnection("blocked")
+        scope.launch {
+            val current = _state.value
+            if (current is ChatUiState.Chatting) blockList.block(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym)
+            endActive(context.getString(R.string.ctl_ended_blocked))
+        }
     }
 
     override fun reportActivePeer(reason: String) {
-        val current = _state.value
-        if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, reason)
-        endActiveConnection("reported")
+        scope.launch {
+            val current = _state.value
+            if (current is ChatUiState.Chatting) reportFlow.report(current.remotePeerId, current.remoteDeviceFingerprint, current.remotePseudonym, reason, current.messages)
+            endActive(context.getString(R.string.ctl_ended_reported))
+        }
+    }
+
+    /** Drops one link from our side - a blocked peer or a protocol error - and, if it was the
+     *  active chat, ends that too. */
+    private fun abortLink(address: String, reason: String) {
+        links.remove(address)?.chat?.close()
+        if (address == activeAddress) endActive(reason)
     }
 
     // ---- BlePeripheralServer.Listener (inbound / "someone connected to us") ----
 
     override fun onCentralConnected(deviceAddress: String) {
-        // Normally activeAddress is only set once we're already talking to someone, so any
-        // other inbound connection is "busy, go away". But requestRandomChat also sets it
-        // (state Connecting) for the side that's deferring to the other's connection attempt
-        // instead of dialing out itself (see its comment) — that's this connection arriving,
-        // not a second one, even though the address the remote connects in on isn't guaranteed
-        // to be the exact address we originally discovered them at while scanning.
-        val awaitingInboundHandshake = _state.value is ChatUiState.Connecting
-        Log.d(TAG, "onCentralConnected addr=$deviceAddress activeAddress=$activeAddress awaitingInboundHandshake=$awaitingInboundHandshake")
-        if (activeAddress != null && !awaitingInboundHandshake) {
-            peripheral.disconnectDevice(deviceAddress) // already busy with another chat
-            return
+        scope.launch {
+            // Busy with a chat - or dialing out ourselves: requestRandomChat stops our GATT server
+            // before connecting, so an inbound link arriving now could never carry a handshake
+            // and would only push aside the outbound attempt that can.
+            Log.d(TAG, "onCentralConnected addr=$deviceAddress activeAddress=$activeAddress state=${_state.value}")
+            if (activeAddress != null) {
+                peripheral.disconnectDevice(deviceAddress)
+                return@launch
+            }
+            activeAddress = deviceAddress
+            newLink(deviceAddress, isOutbound = false)
+            armConnectionTimeout(deviceAddress)
+            _state.value = ChatUiState.Handshaking
         }
-        activeAddress = deviceAddress
-        connections[deviceAddress] = Connection(ChatSession(isInitiator = false, identity = identity), isOutbound = false)
-        armConnectionTimeout(deviceAddress)
-        _state.value = ChatUiState.Handshaking
     }
 
     override fun onCentralDisconnected(deviceAddress: String) {
-        Log.d(TAG, "onCentralDisconnected addr=$deviceAddress")
-        if (deviceAddress == activeAddress) endActiveConnection("peer disconnected")
+        scope.launch {
+            Log.d(TAG, "onCentralDisconnected addr=$deviceAddress")
+            if (deviceAddress == activeAddress) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
+            links.remove(deviceAddress)
+        }
     }
 
-    override fun onFrameReceived(deviceAddress: String, frame: ByteArray) = handleFrame(deviceAddress, frame)
+    override fun onFrameReceived(deviceAddress: String, frame: ByteArray) {
+        scope.launch { handleFrame(deviceAddress, frame) }
+    }
+
+    override fun onAdvertisingStarted() {
+        scope.launch {
+            advertisingWarning = null
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
+        }
+    }
+
+    override fun onAdvertisingFailed(errorCode: Int) {
+        scope.launch {
+            if (!bluetoothOn()) return@launch // reported as Paused instead
+            advertisingWarning = when (errorCode) {
+                AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED ->
+                    context.getString(R.string.ctl_advertising_unsupported)
+                AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS ->
+                    context.getString(R.string.ctl_advertising_too_many_advertisers)
+                else -> context.getString(R.string.ctl_advertising_failed, errorCode)
+            }
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
+        }
+    }
+
+    override fun acknowledgeEnded() {
+        scope.launch { if (_state.value is ChatUiState.Ended) _state.value = ChatUiState.Idle }
+    }
 
     // ---- BleCentralClient.Listener (outbound / "we connected to someone") ----
 
     override fun onPeerDiscovered(deviceAddress: String, sessionId: ByteArray, rssi: Int) {
-        val sessionIdHex = sessionId.joinToString("") { "%02x".format(it) }
-        // Always refreshed to the latest address seen for this session id, in case the
-        // underlying BLE address rotated since we last heard from this same peer.
-        addressBySessionId[sessionIdHex] = deviceAddress
-        discoveredBySessionId[sessionIdHex] = NearbyPeer(
-            sessionId = sessionIdHex,
-            lastSeenAtMillis = System.currentTimeMillis(),
-            signalStrength = SignalStrength.Ble(rssi),
-        )
-        if (_state.value is ChatUiState.Browsing) {
-            _state.value = ChatUiState.Browsing(discoveredBySessionId.values.toList())
+        scope.launch {
+            val sessionIdHex = sessionId.joinToString("") { "%02x".format(it) }
+            // Always refreshed to the latest address seen for this session id, in case the
+            // underlying BLE address rotated since we last heard from this same peer.
+            addressBySessionId[sessionIdHex] = deviceAddress
+            discoveredBySessionId[sessionIdHex] = NearbyPeer(
+                sessionId = sessionIdHex,
+                lastSeenAtMillis = System.currentTimeMillis(),
+                signalStrength = SignalStrength.Ble(rssi),
+            )
+            if (_state.value is ChatUiState.Browsing) _state.value = browsingState()
         }
     }
 
     override fun onConnected(deviceAddress: String) {
-        Log.d(TAG, "onConnected (outbound) addr=$deviceAddress - sending handshake message 1")
-        val connection = Connection(ChatSession(isInitiator = true, identity = identity), isOutbound = true)
-        connections[deviceAddress] = connection
-        armConnectionTimeout(deviceAddress)
-        _state.value = ChatUiState.Handshaking
-        central.sendFrame(deviceAddress, connection.session.startHandshake())
+        scope.launch {
+            if (deviceAddress != activeAddress) {
+                // Timed out meanwhile, or an inbound chat took over (see onCentralConnected).
+                Log.d(TAG, "onConnected (outbound) addr=$deviceAddress no longer wanted - disconnecting")
+                central.disconnect(deviceAddress)
+                return@launch
+            }
+            Log.d(TAG, "onConnected (outbound) addr=$deviceAddress - sending handshake message 1")
+            val link = newLink(deviceAddress, isOutbound = true)
+            armConnectionTimeout(deviceAddress)
+            _state.value = ChatUiState.Handshaking
+            link.chat.start()
+        }
     }
 
     override fun onDisconnected(deviceAddress: String) {
-        Log.d(TAG, "onDisconnected (outbound) addr=$deviceAddress")
-        if (deviceAddress == activeAddress) endActiveConnection("peer disconnected")
-    }
-
-    // ---- shared handshake/chat frame routing ----
-
-    private fun handleFrame(deviceAddress: String, frame: ByteArray) {
-        val connection = connections[deviceAddress] ?: return
-        Log.d(TAG, "handleFrame addr=$deviceAddress step=${connection.step} bytes=${frame.size}")
-        when (connection.step) {
-            HandshakeStep.EXPECT_MESSAGE_1 -> {
-                val message2 = connection.session.respondToHandshake(frame)
-                peripheral.sendFrame(deviceAddress, message2)
-                connection.step = HandshakeStep.EXPECT_MESSAGE_3
-            }
-            HandshakeStep.EXPECT_MESSAGE_2 -> {
-                val message3 = connection.session.completeHandshake(frame)
-                central.sendFrame(deviceAddress, message3)
-                advanceToDeviceIdExchange(deviceAddress, connection)
-            }
-            HandshakeStep.EXPECT_MESSAGE_3 -> {
-                connection.session.finishHandshake(frame)
-                advanceToDeviceIdExchange(deviceAddress, connection)
-            }
-            HandshakeStep.EXPECT_DEVICE_ID -> {
-                val remoteFingerprint = connection.session.decryptMessage(frame)
-                if (blockList.isBlocked(remoteFingerprint)) {
-                    if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
-                    connections.remove(deviceAddress)
-                    endActiveConnection("blocked peer")
-                    return
-                }
-                connection.remoteDeviceFingerprint = remoteFingerprint
-                connection.step = HandshakeStep.EXPECT_PROFILE
-                val ciphertext = connection.session.encryptMessage(ProfileEnvelope.encode(context, profile))
-                if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
-            }
-            HandshakeStep.EXPECT_PROFILE -> {
-                val remoteProfile = ProfileEnvelope.decode(connection.session.decryptMessage(frame))
-                connection.step = HandshakeStep.READY
-                disarmConnectionTimeout()
-                val remotePeerId = connection.session.remotePeerId()
-                _state.value = ChatUiState.Chatting(
-                    remotePeerId = remotePeerId,
-                    remoteDeviceFingerprint = connection.remoteDeviceFingerprint!!,
-                    remotePseudonym = remoteProfile.pseudonym,
-                    remoteGender = remoteProfile.gender,
-                    remoteAge = remoteProfile.age,
-                    remoteBio = remoteProfile.bio,
-                    remotePhoto = remoteProfile.photo,
-                    messages = if (contactStore.isSaved(remotePeerId)) historyStore.messagesFor(remotePeerId) else emptyList(),
-                )
-            }
-            HandshakeStep.READY -> {
-                val envelope = JSONObject(connection.session.decryptMessage(frame))
-                when (envelope.getString("k")) {
-                    "wfd" -> receiveFile(
-                        connection,
-                        FileOffer(
-                            credentials = WfdCredentials(networkName = envelope.getString("ssid"), passphrase = envelope.getString("pass")),
-                            fileName = envelope.getString("name"),
-                            mimeType = envelope.getString("mime"),
-                            sizeBytes = envelope.getLong("size"),
-                        ),
-                    )
-                    else -> appendMessage(ChatMessage(fromMe = false, text = envelope.getString("t"), atMillis = System.currentTimeMillis()))
-                }
-            }
+        scope.launch {
+            Log.d(TAG, "onDisconnected (outbound) addr=$deviceAddress")
+            if (deviceAddress == activeAddress) endActive(context.getString(R.string.ctl_ended_peer_disconnected))
+            links.remove(deviceAddress)
         }
     }
 
-    /** The Noise handshake is done and transport keys are ready. Before showing any chat UI,
-     *  check the peer's now-revealed long-term identity against the block list — discovery only
-     *  ever exposes rotating session ids, so this is the first point blocking can be enforced —
-     *  then trade device fingerprints for a second, identity-independent block check (M5), and
-     *  only once both pass, trade pseudonyms, so a blocked peer never learns ours. */
-    private fun advanceToDeviceIdExchange(deviceAddress: String, connection: Connection) {
-        val remotePeerId = connection.session.remotePeerId()
-        if (blockList.isBlocked(remotePeerId)) {
-            if (connection.isOutbound) central.disconnect(deviceAddress) else peripheral.disconnectDevice(deviceAddress)
-            connections.remove(deviceAddress)
-            endActiveConnection("blocked peer")
+    /** Phones swap the public servers they know in every chat (see [NodeDirectory]), so server
+     *  lists spread from phone to phone - even ones that never reach the internet themselves
+     *  carry them on to those that do. */
+    private val nodeDirectory = NodeDirectory(context, profile)
+
+    private fun shareNodes(link: Link) {
+        scope.launch {
+            val nodes = nodeDirectory.publicForSharing()
+            if (nodes.isNotEmpty() && link.chat.isReady) runCatching { link.chat.send(ChatEnvelope.Nodes(nodes)) }
+        }
+    }
+
+    // ---- shared frame routing ----
+
+    /** Every frame comes from a peer that may be buggy or hostile - a truncated handshake message,
+     *  a ciphertext that fails authentication or a malformed envelope ends that one link, never
+     *  anything more. */
+    private suspend fun handleFrame(deviceAddress: String, frame: ByteArray) {
+        val link = links[deviceAddress] ?: return
+        val event = try {
+            link.chat.onFrame(frame)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "dropping link after bad frame from $deviceAddress", e)
+            abortLink(deviceAddress, context.getString(R.string.ctl_ended_connection_error))
             return
         }
-        connection.step = HandshakeStep.EXPECT_DEVICE_ID
-        val ciphertext = connection.session.encryptMessage(deviceFingerprint)
-        if (connection.isOutbound) central.sendFrame(deviceAddress, ciphertext) else peripheral.sendFrame(deviceAddress, ciphertext)
+        when (event) {
+            null -> Unit
+            ChatEvent.Blocked -> abortLink(deviceAddress, context.getString(R.string.ctl_ended_blocked_peer))
+            ChatEvent.AgeGroupMismatch -> abortLink(deviceAddress, context.getString(R.string.ctl_ended_age_mismatch))
+            is ChatEvent.Ready -> {
+                if (deviceAddress != activeAddress) {
+                    abortLink(deviceAddress, context.getString(R.string.ctl_ended_superseded))
+                    return
+                }
+                disarmConnectionTimeout()
+                openChat.start(event.peer, identity.publicKey, link.chat)
+                if (deviceAddress != activeAddress) return // declined right away (match filter)
+                shareNodes(link)
+            }
+            is ChatEvent.Received -> when (val envelope = openChat.onReceived(link.chat, event.envelope)) {
+                null -> Unit
+                is ChatEnvelope.WfdOffer -> receiveFile(link, envelope)
+                is ChatEnvelope.Nodes -> nodeDirectory.addLearned(envelope.addresses)
+                else -> Log.d(TAG, "ignoring unsupported envelope ${envelope::class.simpleName}")
+            }
+        }
     }
 
     private companion object {
         const val TAG = "BleChatController"
         const val CONNECTION_TIMEOUT_MILLIS = 15_000L
+        const val STALE_PEER_CHECK_MILLIS = 10_000L
+        private const val VISIBILITY_CHECK_MILLIS = 30_000L
+        const val PEER_TTL_MILLIS = 30_000L
+        const val SESSION_ROTATION_MILLIS = 10 * 60_000L
+        const val WFD_TRANSFER_KEY_INFO = "frad-wfd-media-v2"
     }
 }

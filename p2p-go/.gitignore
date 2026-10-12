@@ -1,0 +1,6 @@
+# Local run artifacts of the commands in cmd/ (the root .gitignore covers the
+# bootstrap binary and identity key): the bootstrap node's persisted node list
+# (written next to its identity key by default) and a locally built crawler.
+/nodes.txt
+/nodecrawl
+/nodecrawl.exe

@@ -10,11 +10,8 @@ import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import androidx.annotation.RequiresApi
-import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.io.InputStream
-import java.io.OutputStream
+import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -22,11 +19,27 @@ import java.net.Socket
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import app.frad.chat.chat.closingOnCancel
 import app.frad.chat.crypto.TransferCipher
+import app.frad.chat.crypto.readChunkedTo
+import app.frad.chat.crypto.writeChunkedFrom
+
+/** Like runCatching, but lets a cancellation through - a cancelled transfer must stop the
+ *  caller too, not come back as an ordinary failure it might retry or report. */
+private inline fun <T> runCatchingNonCancellation(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
 
 /** The exact Wi-Fi network a receiver needs to join to reach the sender's group. */
 data class WfdCredentials(val networkName: String, val passphrase: String)
@@ -49,39 +62,54 @@ class WifiDirectTransferManager(context: Context) {
     private val channel = manager.initialize(appContext, appContext.mainLooper, null)
 
     /** Sender side: creates a fresh group, waits for the receiver to connect, then streams
-     *  [fileBytes] as authenticated chunks keyed by [transferKey]. [onCredentialsReady] is
+     *  [file] as authenticated chunks keyed by [transferKey], reading it as it goes. [onCredentialsReady] is
      *  called once the group's network name/passphrase are known, so the caller can relay
-     *  them to the peer over BLE before this function blocks waiting for the socket. */
+     *  them to the peer over BLE before this function blocks waiting for the socket.
+     *  Cancelling the calling coroutine aborts the transfer (the sockets are closed). */
     suspend fun hostAndSendFile(
-        fileBytes: ByteArray,
+        file: File,
         transferKey: ByteArray,
+        onProgress: (Long) -> Unit = {},
         onCredentialsReady: suspend (WfdCredentials) -> Unit,
-    ): Result<Unit> = runCatching {
+    ): Result<Unit> = runCatchingNonCancellation {
         createGroup()
         try {
             val group = requestGroupInfo()
             onCredentialsReady(WfdCredentials(networkName = group.networkName, passphrase = group.passphrase))
 
+            // Listen on the group's own address only, not on every network the phone is in: on the
+            // ordinary Wi-Fi, anyone could otherwise connect first and take the transfer's one slot.
+            val groupAddress = runCatching { requestConnectionInfo().groupOwnerAddress }.getOrNull()
             withContext(Dispatchers.IO) {
-                ServerSocket(PORT).use { server ->
+                (if (groupAddress != null) ServerSocket(PORT, 1, groupAddress) else ServerSocket(PORT)).use { server ->
                     server.soTimeout = CONNECT_TIMEOUT_MILLIS
-                    server.accept().use { socket ->
-                        writeChunks(socket.getOutputStream(), fileBytes, TransferCipher(transferKey))
+                    closingOnCancel(server::close) { acceptFromGroup(server, groupAddress) }.use { socket ->
+                        val out = socket.getOutputStream()
+                        closingOnCancel(socket::close) {
+                            file.inputStream().use { input ->
+                                writeChunkedFrom(input, file.length(), TransferCipher(transferKey), CHUNK_SIZE, onProgress) { out.write(it) }
+                            }
+                            out.flush()
+                        }
                     }
                 }
             }
         } finally {
-            removeGroup()
+            withContext(NonCancellable) { runCatching { removeGroup() } }
         }
     }
 
     /** Receiver side: joins the group described by [credentials], connects to the group
-     *  owner, and reads back [expectedSize] plaintext bytes of authenticated chunks. */
+     *  owner, and writes [expectedSize] plaintext bytes of authenticated chunks to [target] as
+     *  they arrive.
+     *  Cancelling the calling coroutine aborts the transfer (the socket is closed). */
     suspend fun joinAndReceiveFile(
         credentials: WfdCredentials,
         transferKey: ByteArray,
         expectedSize: Long,
-    ): Result<ByteArray> = runCatching {
+        target: File,
+        onProgress: (Long) -> Unit = {},
+    ): Result<Unit> = runCatchingNonCancellation {
         val receiver = ConnectionInfoReceiver(appContext)
         try {
             receiver.register()
@@ -95,12 +123,41 @@ class WifiDirectTransferManager(context: Context) {
 
             withContext(Dispatchers.IO) {
                 connectSocketWithRetry(groupOwnerAddress).use { socket ->
-                    readChunks(socket.getInputStream(), expectedSize, TransferCipher(transferKey))
+                    val input = DataInputStream(socket.getInputStream())
+                    closingOnCancel(socket::close) {
+                        target.outputStream().use { out ->
+                            readChunkedTo(out, expectedSize, TransferCipher(transferKey), MAX_CHUNK_ON_WIRE, onProgress) { length ->
+                                ByteArray(length).also(input::readFully)
+                            }
+                        }
+                    }
                 }
             }
         } finally {
             receiver.unregister()
-            removeGroup()
+            withContext(NonCancellable) { runCatching { removeGroup() } }
+        }
+    }
+
+    /** The first connection from inside the group's subnet; anything else is dropped. The data
+     *  is encrypted for the peer anyway - this only keeps others from occupying the slot. */
+    private fun acceptFromGroup(server: ServerSocket, groupAddress: InetAddress?): Socket {
+        while (true) {
+            val socket = server.accept()
+            if (groupAddress == null || sameSubnet(socket.inetAddress, groupAddress)) return socket
+            runCatching { socket.close() }
+        }
+    }
+
+    private fun sameSubnet(a: InetAddress?, b: InetAddress): Boolean {
+        val x = a?.address ?: return false
+        val y = b.address
+        return x.size == 4 && y.size == 4 && x[0] == y[0] && x[1] == y[1] && x[2] == y[2]
+    }
+
+    private suspend fun requestConnectionInfo(): WifiP2pInfo = suspendCancellableCoroutine { cont ->
+        manager.requestConnectionInfo(channel) { info ->
+            if (info != null) cont.resume(info) else cont.resumeWithException(IllegalStateException("No connection info"))
         }
     }
 
@@ -115,32 +172,6 @@ class WifiDirectTransferManager(context: Context) {
             }
         }
         throw lastError ?: IllegalStateException("Could not connect to group owner")
-    }
-
-    private fun writeChunks(rawOut: OutputStream, bytes: ByteArray, cipher: TransferCipher) {
-        val out = DataOutputStream(rawOut)
-        var offset = 0
-        while (offset < bytes.size) {
-            val end = minOf(offset + CHUNK_SIZE, bytes.size)
-            val ciphertext = cipher.encryptChunk(bytes.copyOfRange(offset, end))
-            out.writeInt(ciphertext.size)
-            out.write(ciphertext)
-            offset = end
-        }
-        out.flush()
-    }
-
-    private fun readChunks(rawIn: InputStream, expectedSize: Long, cipher: TransferCipher): ByteArray {
-        val input = DataInputStream(rawIn)
-        val result = ByteArrayOutputStream()
-        while (result.size() < expectedSize) {
-            val length = input.readInt()
-            require(length in 0..MAX_CHUNK_ON_WIRE) { "Implausible chunk length $length" }
-            val ciphertext = ByteArray(length)
-            input.readFully(ciphertext)
-            result.write(cipher.decryptChunk(ciphertext))
-        }
-        return result.toByteArray()
     }
 
     private suspend fun createGroup(): Unit = suspendCancellableCoroutine { cont ->

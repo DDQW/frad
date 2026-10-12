@@ -90,6 +90,37 @@ object Geohash {
     }
 
     /**
+     * The (up to) 8 cells surrounding [geohash] at the same precision. Geohash cells have hard
+     * borders: two people a few hundred metres apart can sit in different cells and would never
+     * find each other through their own cell's rendezvous topic alone - see
+     * [app.frad.chat.wideradius.WideRangeChatController], which advertises in all nine.
+     * Longitude wraps around the antimeridian; rows beyond a pole are simply left out.
+     */
+    fun neighbors(geohash: String): List<String> {
+        val precision = geohash.length
+        require(precision in MIN_PRECISION..MAX_PRECISION) { "Unsupported geohash precision $precision" }
+        val (latitude, longitude) = decode(geohash)
+        val bits = precision * 5
+        val cellWidth = 360.0 / (1L shl ((bits + 1) / 2)) // longitude takes the odd bit
+        val cellHeight = 180.0 / (1L shl (bits / 2))
+
+        val result = LinkedHashSet<String>()
+        for (dLat in -1..1) {
+            val lat = latitude + dLat * cellHeight
+            if (lat <= -90.0 || lat >= 90.0) continue
+            for (dLon in -1..1) {
+                if (dLat == 0 && dLon == 0) continue
+                var lon = longitude + dLon * cellWidth
+                if (lon >= 180.0) lon -= 360.0
+                if (lon < -180.0) lon += 360.0
+                result += encode(lat, lon, precision)
+            }
+        }
+        result -= geohash
+        return result.toList()
+    }
+
+    /**
      * Maps a desired search radius to the finest geohash precision whose cell
      * is still at least [radiusKm] wide — i.e. the smallest cell that
      * comfortably contains the requested radius rather than clipping it.

@@ -39,4 +39,35 @@ class GeohashTest {
         assertEquals(Geohash.MAX_PRECISION, Geohash.precisionForRadiusKm(0.0))
         assertEquals(Geohash.MIN_PRECISION, Geohash.precisionForRadiusKm(1_000_000.0))
     }
+
+    @Test
+    fun `neighbours match the classic lookup-table algorithm`() {
+        // Expected values computed with the well-known neighbour/border table algorithm
+        // (as in ngeohash), independent of the centre-offset approach Geohash.neighbors uses.
+        assertEquals(
+            listOf("gbsus", "gbsut", "gbsuu", "gbsuw", "gbsuy", "gbsvh", "gbsvj", "gbsvn"),
+            Geohash.neighbors("gbsuv").sorted(),
+        )
+        assertEquals(
+            listOf("u4pre", "u4prg", "u4prs", "u4prt", "u4prv", "u4r25", "u4r2h", "u4r2j"),
+            Geohash.neighbors("u4pru").sorted(),
+        )
+        assertEquals(listOf("u0", "u1", "u2", "u4", "u6", "u8", "u9", "ud"), Geohash.neighbors("u3").sorted())
+    }
+
+    @Test
+    fun `neighbours wrap around the antimeridian`() {
+        assertEquals(
+            listOf("2pbpb", "80000", "80002", "rzzzy", "rzzzz", "xbpbn", "xbpbq", "xbpbr"),
+            Geohash.neighbors("xbpbp").sorted(),
+        )
+    }
+
+    @Test
+    fun `cells on the polar edge have no neighbours beyond the pole`() {
+        val northernmost = Geohash.encode(89.99, 10.0, precision = 2)
+        val neighbours = Geohash.neighbors(northernmost)
+        assertEquals(5, neighbours.size)
+        assertTrue(neighbours.all { Geohash.decode(it).first < Geohash.decode(northernmost).first + 1e-9 })
+    }
 }

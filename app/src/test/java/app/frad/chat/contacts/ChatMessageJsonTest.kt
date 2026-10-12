@@ -17,6 +17,16 @@ class ChatMessageJsonTest {
     }
 
     @Test
+    fun `message id and delivery state round trip`() {
+        val messages = listOf(
+            ChatMessage(fromMe = true, text = "sent", atMillis = 1L, id = "abc", delivered = true),
+            ChatMessage(fromMe = true, text = "pending", atMillis = 2L, id = "def"),
+            ChatMessage(fromMe = false, text = "theirs", atMillis = 3L),
+        )
+        assertEquals(messages, ChatMessageJson.decode(ChatMessageJson.encode(messages)))
+    }
+
+    @Test
     fun `a file message round trips through encode and decode`() {
         val message = ChatMessage(
             fromMe = false,
@@ -41,5 +51,11 @@ class ChatMessageJsonTest {
         val decoded = ChatMessageJson.decode(preM3Json)
 
         assertEquals(listOf(ChatMessage(fromMe = true, text = "hi from M2", atMillis = 500L, kind = MessageKind.TEXT)), decoded)
+    }
+
+    @Test
+    fun `the expiry of a disappearing message survives a round trip`() {
+        val messages = listOf(ChatMessage(fromMe = false, text = "bye soon", atMillis = 10, expiresAtMillis = 3_600_010))
+        assertEquals(messages, ChatMessageJson.decode(ChatMessageJson.encode(messages)))
     }
 }

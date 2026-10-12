@@ -5,21 +5,32 @@ How it works:
 
 * Nearby (Bluetooth LE, no internet needed): your phone and theirs discover
   each other directly over Bluetooth. Matching who you chat with happens on
-  your own device.
+  your own device. Photos and files go over a direct Wi-Fi connection.
 * Wider range: find people within a chosen radius over the internet, using an
   open, decentralized discovery protocol (go-libp2p) — not a company-owned
-  matchmaking service. Anyone can run a bootstrap/relay node, and the node
-  list is user-configurable rather than hard-locked to one operator.
+  matchmaking service. Anyone can run a bootstrap/relay node; server lists can
+  be shared between phones by link or QR code.
 
 Privacy and safety by design:
 
 * No account, phone number, or email — ever.
 * Your exact GPS coordinates are never sent anywhere, not even to a matched
-  peer.
-* "Available to chat" is an opt-in toggle you turn on, not something running
-  silently in the background.
-* Chats are end-to-end encrypted between the two phones.
-* You can block or report anyone you're matched with, entirely on-device.
+  peer. Photos and videos you send are stripped of their location and other
+  hidden data first.
+* Being visible is always shown: while FRAD can be found in the background,
+  a permanent notification says so and turns it off with one tap. You can
+  also limit visibility to 30 minutes, 1 hour or 3 hours.
+* Chats are end-to-end encrypted between the two phones (Noise protocol);
+  message lengths are padded so they don't give away what you write.
+* Nobody can send you a file you haven't accepted; pictures from people who
+  aren't your contacts stay pixelated until you tap them.
+* Chats are only kept with people you save as contacts — encrypted on your
+  phone, and deleted after a period you choose if you like.
+* Optional app lock (fingerprint, face or screen lock) and a "delete
+  everything" button.
+* Adults and minors are never matched with each other.
+* You can block or report anyone you've chatted with — even after they left —
+  entirely on-device.
 
 100% free and open source software. No ads, no tracking, no proprietary
 network services.

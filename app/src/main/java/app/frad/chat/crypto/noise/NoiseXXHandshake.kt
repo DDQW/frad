@@ -22,7 +22,15 @@ internal class NoiseXXHandshake(
     private val isInitiator: Boolean,
     private val staticPrivateKey: ByteArray,
     private val staticPublicKey: ByteArray,
+    prologue: ByteArray,
+    /** Fresh ephemeral keypair per handshake; replaceable only so published test vectors (fixed
+     *  ephemerals) can check this implementation byte for byte. */
+    private val newEphemeralKeyPair: () -> Pair<ByteArray, ByteArray> = Primitives::generateKeyPair,
 ) {
+    /** The payload carried by the handshake message read last (FRAD itself sends none). */
+    var lastReceivedPayload: ByteArray = ByteArray(0)
+        private set
+
     private companion object {
         const val PROTOCOL_NAME = "Noise_XX_25519_ChaChaPoly_SHA256"
         const val PUB_LEN = Primitives.DH_LEN
@@ -37,48 +45,56 @@ internal class NoiseXXHandshake(
     private var remoteStaticPublicKey: ByteArray? = null
 
     init {
-        symmetric.mixHash(ByteArray(0)) // empty prologue
+        // Both sides must use the same prologue or the handshake fails authentication - which is
+        // the point: it binds the whole transcript to this app and protocol version.
+        symmetric.mixHash(prologue)
+    }
+
+    /** These bytes come straight off the wire from an unauthenticated peer: reject a truncated
+     *  message up front with a clear error instead of an out-of-bounds copy further down. */
+    private fun requireLength(message: ByteArray, minLength: Int, name: String) {
+        require(message.size >= minLength) { "Handshake $name too short: ${message.size} < $minLength bytes" }
     }
 
     private fun generateEphemeral() {
-        val (priv, pub) = Primitives.generateKeyPair()
+        val (priv, pub) = newEphemeralKeyPair()
         ephemeralPrivateKey = priv
         ephemeralPublicKey = pub
     }
 
     // ---- Message 1: -> e -------------------------------------------------
 
-    fun writeMessage1(): ByteArray {
+    fun writeMessage1(payload: ByteArray = ByteArray(0)): ByteArray {
         check(isInitiator)
         generateEphemeral()
         symmetric.mixHash(ephemeralPublicKey!!)
-        val payload = symmetric.encryptAndHash(ByteArray(0))
-        return ephemeralPublicKey!! + payload
+        return ephemeralPublicKey!! + symmetric.encryptAndHash(payload)
     }
 
     fun readMessage1(message: ByteArray) {
         check(!isInitiator)
+        requireLength(message, PUB_LEN, "message 1")
         remoteEphemeralPublicKey = message.copyOfRange(0, PUB_LEN)
         symmetric.mixHash(remoteEphemeralPublicKey!!)
-        symmetric.decryptAndHash(message.copyOfRange(PUB_LEN, message.size))
+        lastReceivedPayload = symmetric.decryptAndHash(message.copyOfRange(PUB_LEN, message.size))
     }
 
     // ---- Message 2: <- e, ee, s, es --------------------------------------
 
-    fun writeMessage2(): ByteArray {
+    fun writeMessage2(payload: ByteArray = ByteArray(0)): ByteArray {
         check(!isInitiator)
         generateEphemeral()
         symmetric.mixHash(ephemeralPublicKey!!)
         symmetric.mixKey(Primitives.dh(ephemeralPrivateKey!!, remoteEphemeralPublicKey!!)) // ee
         val sCiphertext = symmetric.encryptAndHash(staticPublicKey) // s
         symmetric.mixKey(Primitives.dh(staticPrivateKey, remoteEphemeralPublicKey!!)) // es (responder: DH(s, re))
-        val payload = symmetric.encryptAndHash(ByteArray(0))
-        return ephemeralPublicKey!! + sCiphertext + payload
+        return ephemeralPublicKey!! + sCiphertext + symmetric.encryptAndHash(payload)
     }
 
     /** @return the remote party's static public key, learned from this message. */
     fun readMessage2(message: ByteArray): ByteArray {
         check(isInitiator)
+        requireLength(message, PUB_LEN + PUB_LEN + TAG_LEN + TAG_LEN, "message 2")
         var offset = 0
         remoteEphemeralPublicKey = message.copyOfRange(offset, PUB_LEN).also { offset += PUB_LEN }
         symmetric.mixHash(remoteEphemeralPublicKey!!)
@@ -89,31 +105,34 @@ internal class NoiseXXHandshake(
         remoteStaticPublicKey = rs
         symmetric.mixKey(Primitives.dh(ephemeralPrivateKey!!, rs)) // es (initiator: DH(e, rs))
 
-        symmetric.decryptAndHash(message.copyOfRange(offset, message.size))
+        lastReceivedPayload = symmetric.decryptAndHash(message.copyOfRange(offset, message.size))
         return rs
     }
 
     // ---- Message 3: -> s, se ---------------------------------------------
 
-    fun writeMessage3(): ByteArray {
+    fun writeMessage3(payload: ByteArray = ByteArray(0)): ByteArray {
         check(isInitiator)
         val sCiphertext = symmetric.encryptAndHash(staticPublicKey) // s
         symmetric.mixKey(Primitives.dh(staticPrivateKey, remoteEphemeralPublicKey!!)) // se (initiator: DH(s, re))
-        val payload = symmetric.encryptAndHash(ByteArray(0))
-        return sCiphertext + payload
+        return sCiphertext + symmetric.encryptAndHash(payload)
     }
 
     /** @return the remote party's static public key, learned from this message. */
     fun readMessage3(message: ByteArray): ByteArray {
         check(!isInitiator)
+        requireLength(message, PUB_LEN + TAG_LEN + TAG_LEN, "message 3")
         val sCiphertext = message.copyOfRange(0, PUB_LEN + TAG_LEN)
         val rs = symmetric.decryptAndHash(sCiphertext) // s
         remoteStaticPublicKey = rs
         symmetric.mixKey(Primitives.dh(ephemeralPrivateKey!!, rs)) // se (responder: DH(e, rs))
 
-        symmetric.decryptAndHash(message.copyOfRange(PUB_LEN + TAG_LEN, message.size))
+        lastReceivedPayload = symmetric.decryptAndHash(message.copyOfRange(PUB_LEN + TAG_LEN, message.size))
         return rs
     }
+
+    /** The transcript hash - identical on both sides once the handshake is complete. */
+    fun handshakeHash(): ByteArray = symmetric.handshakeHash()
 
     /** Must be called after message 3 has been written (initiator) or read (responder). */
     fun split(): NoiseTransportKeys {

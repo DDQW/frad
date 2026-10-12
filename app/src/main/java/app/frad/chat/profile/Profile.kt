@@ -26,8 +26,8 @@ class Profile(context: Context) {
             return generated
         }
         set(value) {
-            val trimmed = value.trim().take(MAX_LENGTH)
-            prefs.edit().putString(KEY_PSEUDONYM, trimmed.ifEmpty { defaultPseudonym() }).apply()
+            val cleaned = TextSanitizer.pseudonym(value)
+            prefs.edit().putString(KEY_PSEUDONYM, cleaned.ifEmpty { defaultPseudonym() }).apply()
         }
 
     private fun defaultPseudonym(): String = "Guest${Random.nextInt(1000, 10000)}"
@@ -53,6 +53,59 @@ class Profile(context: Context) {
         get() = prefs.getString(KEY_BOOTSTRAP_NODES, null)?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         set(value) { prefs.edit().putString(KEY_BOOTSTRAP_NODES, value.joinToString("\n")).apply() }
 
+    /** Wide-range: besides the servers set here, also use the public ones - FRAD's official list
+     *  and servers learned from other servers and phones (see wideradius/NodeDirectory). On by
+     *  default, so wide-range works without anyone having to find a server first. */
+    var usePublicNodes: Boolean
+        get() = prefs.getBoolean(KEY_USE_PUBLIC_NODES, true)
+        set(value) { prefs.edit().putBoolean(KEY_USE_PUBLIC_NODES, value).apply() }
+
+    /** Wide-range only: route every connection through the configured bootstrap/relay nodes,
+     *  so chat partners and other DHT participants never learn this device's IP address -
+     *  which would otherwise pin it down far more precisely than the shared geohash cell does.
+     *  Off by default: everything gets slower and depends on the relays, and peers without a
+     *  relay reservation of their own can't be reached. See p2p-go's Config.RelayOnly. */
+    var wideRangeRelayOnly: Boolean
+        get() = prefs.getBoolean(KEY_RELAY_ONLY, false)
+        set(value) { prefs.edit().putBoolean(KEY_RELAY_ONLY, value).apply() }
+
+    /** Require fingerprint/face or the phone's PIN to open FRAD, and keep its screens out of the
+     *  recent-apps overview and screenshots - see [app.frad.chat.AppLock]. */
+    var appLock: Boolean
+        get() = prefs.getBoolean(KEY_APP_LOCK, false)
+        set(value) { prefs.edit().putBoolean(KEY_APP_LOCK, value).apply() }
+
+    /** Don't send the profile photo with the profile; it's only swapped once both people in a
+     *  chat agree (see [app.frad.chat.chat.ChatEnvelope.PhotoRequest]). */
+    var photoOnRequest: Boolean
+        get() = prefs.getBoolean(KEY_PHOTO_ON_REQUEST, false)
+        set(value) { prefs.edit().putBoolean(KEY_PHOTO_ON_REQUEST, value).apply() }
+
+    /** Keep (redacted) crash reports on the phone for the user to share - see
+     *  [app.frad.chat.diagnostics.CrashReports]. Off unless the user turns it on. */
+    var crashReports: Boolean
+        get() = prefs.getBoolean(KEY_CRASH_REPORTS, false)
+        set(value) { prefs.edit().putBoolean(KEY_CRASH_REPORTS, value).apply() }
+
+    /** Shown to matches (see [Interest]); at most [Interest.MAX_PER_PROFILE]. */
+    var interests: Set<Interest>
+        get() = prefs.getString(KEY_INTERESTS, null)?.split(',')?.mapNotNull(Interest::fromKey)?.toSet() ?: emptySet()
+        set(value) {
+            prefs.edit().putString(KEY_INTERESTS, value.take(Interest.MAX_PER_PROFILE).joinToString(",") { it.key }).apply()
+        }
+
+    /** When being visible (browsing) should end by itself, in epoch millis; 0 = until switched
+     *  off. Checked by the controllers while browsing - see the Radar tab's "Stay visible". */
+    var visibleUntilMillis: Long
+        get() = prefs.getLong(KEY_VISIBLE_UNTIL, 0L)
+        set(value) { prefs.edit().putLong(KEY_VISIBLE_UNTIL, value).apply() }
+
+    /** Saved chats with contacts are deleted after this many days; 0 keeps them until the
+     *  contact or the chat is deleted. See [app.frad.chat.contacts.ChatHistoryStore]. */
+    var historyRetentionDays: Int
+        get() = prefs.getInt(KEY_HISTORY_RETENTION_DAYS, 0)
+        set(value) { prefs.edit().putInt(KEY_HISTORY_RETENTION_DAYS, value.coerceAtLeast(0)).apply() }
+
     /** Whether local BLE discovery/chat should keep running in the background - via
      *  [app.frad.chat.ble.LocalBleService] as a foreground service with a persistent
      *  notification, never silently - instead of only while the app is open. Defaults to true:
@@ -66,29 +119,60 @@ class Profile(context: Context) {
         get() = prefs.getBoolean(KEY_ALWAYS_VISIBLE, true)
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_VISIBLE, value).apply() }
 
-    /** Shown to whoever you match with, alongside the pseudonym (see [ProfileEnvelope]) - unlike
-     *  the pseudonym, always has a value once read, matching the "Male/Female, required" choice
-     *  made for this field; defaults on first read exactly like [pseudonym] does. */
-    var gender: Gender
-        get() {
-            val stored = prefs.getString(KEY_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() }
-            if (stored != null) return stored
-            val generated = Gender.entries[Random.nextInt(Gender.entries.size)]
-            prefs.edit().putString(KEY_GENDER, generated.name).apply()
-            return generated
-        }
-        set(value) { prefs.edit().putString(KEY_GENDER, value.name).apply() }
+    /** Shown to whoever you match with, alongside the pseudonym (see [ProfileEnvelope]). Chosen by
+     *  the user during onboarding (see [onboarded]) - never made up: null until then. */
+    var gender: Gender?
+        get() = prefs.getString(KEY_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() }
+        set(value) { prefs.edit().putString(KEY_GENDER, value?.name).apply() }
 
-    /** Optional; null means not shared. Clamped to a plausible human range so a peer can't be
-     *  sent (or send) a nonsense value. */
+    /** Required (asked during onboarding, at least [MIN_AGE]) - it decides which age group you can
+     *  be matched with, see [isAdult]. Whether the number itself is shown to matches is
+     *  [shareAge]. Null until set, or if a stored value is outside the allowed range. */
     var age: Int?
         get() = prefs.getInt(KEY_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE }
         set(value) { prefs.edit().putInt(KEY_AGE, value?.coerceIn(MIN_AGE, MAX_AGE) ?: -1).apply() }
 
+    /** Who to be matched with - see [MatchFilter]. Ages are kept within [MIN_AGE]..[MAX_AGE]. */
+    var matchFilter: MatchFilter
+        get() = MatchFilter(
+            minAge = prefs.getInt(KEY_MATCH_MIN_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE },
+            maxAge = prefs.getInt(KEY_MATCH_MAX_AGE, -1).takeIf { it in MIN_AGE..MAX_AGE },
+            gender = prefs.getString(KEY_MATCH_GENDER, null)?.let { runCatching { Gender.valueOf(it) }.getOrNull() },
+        )
+        set(value) {
+            prefs.edit()
+                .putInt(KEY_MATCH_MIN_AGE, value.minAge?.coerceIn(MIN_AGE, MAX_AGE) ?: -1)
+                .putInt(KEY_MATCH_MAX_AGE, value.maxAge?.coerceIn(MIN_AGE, MAX_AGE) ?: -1)
+                .putString(KEY_MATCH_GENDER, value.gender?.name)
+                .apply()
+        }
+
+    /** Whether matches see your [age]; the age group ([isAdult]) is always exchanged regardless. */
+    var shareAge: Boolean
+        get() = prefs.getBoolean(KEY_SHARE_AGE, true)
+        set(value) { prefs.edit().putBoolean(KEY_SHARE_AGE, value).apply() }
+
+    /** Adults are only ever matched with adults and minors with minors - see
+     *  [app.frad.chat.chat.ChatConnection]. Self-declared, like everything in a no-account app. */
+    val isAdult: Boolean get() = (age ?: 0) >= ADULT_AGE
+
+    /** Whether the first-run setup (pseudonym, gender, age) has been completed. Nothing is
+     *  advertised or exchanged with anyone before that. */
+    val onboarded: Boolean get() = prefs.getBoolean(KEY_ONBOARDED, false) && gender != null && age != null
+
+    fun completeOnboarding(pseudonym: String, gender: Gender, age: Int, shareAge: Boolean) {
+        require(age >= MIN_AGE) { "FRAD is for people aged $MIN_AGE and over" }
+        this.pseudonym = pseudonym
+        this.gender = gender
+        this.age = age
+        this.shareAge = shareAge
+        prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
+    }
+
     /** Optional short free-text description, shown to whoever you match with. */
     var bio: String
         get() = prefs.getString(KEY_BIO, null) ?: ""
-        set(value) { prefs.edit().putString(KEY_BIO, value.trim().take(MAX_BIO_LENGTH)).apply() }
+        set(value) { prefs.edit().putString(KEY_BIO, TextSanitizer.clean(value, MAX_BIO_LENGTH, allowNewlines = true)).apply() }
 
     companion object {
         private const val PREFS_FILE = "frad_profile"
@@ -97,13 +181,27 @@ class Profile(context: Context) {
         private const val KEY_RADIUS_KM = "search_radius_km"
         private const val KEY_BOOTSTRAP_NODES = "bootstrap_nodes"
         private const val KEY_ALWAYS_VISIBLE = "always_visible"
+        private const val KEY_RELAY_ONLY = "wide_range_relay_only"
+        private const val KEY_APP_LOCK = "app_lock"
+        private const val KEY_HISTORY_RETENTION_DAYS = "history_retention_days"
+        private const val KEY_VISIBLE_UNTIL = "visible_until"
+        private const val KEY_INTERESTS = "interests"
+        private const val KEY_PHOTO_ON_REQUEST = "photo_on_request"
+        private const val KEY_USE_PUBLIC_NODES = "use_public_nodes"
+        private const val KEY_CRASH_REPORTS = "crash_reports"
         private const val KEY_GENDER = "gender"
         private const val KEY_AGE = "age"
+        private const val KEY_SHARE_AGE = "share_age"
+        private const val KEY_ONBOARDED = "onboarded"
         private const val KEY_BIO = "bio"
+        private const val KEY_MATCH_MIN_AGE = "match_min_age"
+        private const val KEY_MATCH_MAX_AGE = "match_max_age"
+        private const val KEY_MATCH_GENDER = "match_gender"
         private const val DEFAULT_RADIUS_KM = 75.0
         const val MAX_LENGTH = 24
         const val MAX_BIO_LENGTH = 140
-        const val MIN_AGE = 13
+        const val MIN_AGE = 16
+        const val ADULT_AGE = 18
         const val MAX_AGE = 120
 
         /** Short, stable suffix derived from a peer's long-term id, so that two people who

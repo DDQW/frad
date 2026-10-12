@@ -2,7 +2,8 @@ package app.frad.chat.chat
 
 enum class MessageKind { TEXT, FILE }
 
-/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text]. */
+/** [kind] `FILE` messages carry [fileName]/[mimeType]/[sizeBytes]/[localPath] instead of [text].
+ *  [id] and [delivered] are kept for delivery receipts. */
 data class ChatMessage(
     val fromMe: Boolean,
     val text: String,
@@ -12,19 +13,45 @@ data class ChatMessage(
     val mimeType: String? = null,
     val sizeBytes: Long = 0L,
     val localPath: String? = null,
+    val id: String? = null,
+    val delivered: Boolean = false,
+    /** When the message disappears (see [ChatUiState.Chatting.disappearSeconds]); null: never. */
+    val expiresAtMillis: Long? = null,
 )
 
 /** Maximum size of a file this app will send or accept over any transport (Wi-Fi Direct or
  *  wide-range) — guards against accidental huge sends and against a peer claiming an
- *  implausible size in a file offer. */
-const val MAX_TRANSFER_FILE_BYTES = 25L * 1024 * 1024
+ *  implausible size in a file offer. Files are streamed from and to disk, never held in memory
+ *  as a whole, so this is about transfer time, not RAM. */
+const val MAX_TRANSFER_FILE_BYTES = 100L * 1024 * 1024
+
+/** A chat whose first messages are still waiting on a yes (see [ChatEnvelope.ChatAccept]). */
+enum class Acceptance {
+    /** They asked to chat with us: we see their profile and decide. */
+    THEY_ASK,
+
+    /** We asked: they're deciding. */
+    WAITING_FOR_THEM,
+}
+
+/** Where a photo swap (see [ChatEnvelope.PhotoRequest]) stands. */
+enum class PhotoSwap { WE_ASKED, THEY_ASKED }
 
 sealed interface ChatUiState {
     /** Broadcasting is off; nothing is happening. */
     data object Idle : ChatUiState
 
-    /** Opted in: advertising presence and scanning for others who are too. */
-    data class Browsing(val nearbyPeers: List<app.frad.chat.pairing.NearbyPeer>) : ChatUiState
+    /** Opted in: advertising presence and scanning for others who are too. [warning] says why
+     *  others may not be able to find us right now (e.g. advertising unsupported on this phone),
+     *  even though we can still find them. */
+    data class Browsing(
+        val nearbyPeers: List<app.frad.chat.pairing.NearbyPeer>,
+        val warning: String? = null,
+    ) : ChatUiState
+
+    /** Opted in, but the radio this layer needs is unavailable right now (e.g. Bluetooth is
+     *  switched off). Resumes on its own once it's back. */
+    data class Paused(val reason: String) : ChatUiState
 
     data class Connecting(val target: app.frad.chat.pairing.NearbyPeer) : ChatUiState
     data object Handshaking : ChatUiState
@@ -32,11 +59,30 @@ sealed interface ChatUiState {
         val remotePeerId: String,
         val remoteDeviceFingerprint: String,
         val remotePseudonym: String,
-        val remoteGender: app.frad.chat.profile.Gender,
+        val remoteGender: app.frad.chat.profile.Gender?,
         val remoteAge: Int?,
         val remoteBio: String,
         val remotePhoto: ByteArray?,
         val messages: List<ChatMessage>,
+        /** The peer is typing right now (see [ChatEnvelope.Typing]). */
+        val peerTyping: Boolean = false,
+        /** Both sides' long-term keys as a number the two people can compare out of band to rule
+         *  out a man in the middle - see [SafetyNumber]. */
+        val safetyNumber: String = "",
+        /** The peer asks to send this file; nothing is transferred unless the user accepts. */
+        val incomingFile: FileOffer? = null,
+        /** What the peer picked on their profile (see [app.frad.chat.profile.Interest]). */
+        val remoteInterests: Set<app.frad.chat.profile.Interest> = emptySet(),
+        /** Their long-term public key - stored when they're saved as a contact, so the two can
+         *  find each other again (see [app.frad.chat.crypto.ContactRendezvous]). */
+        val remoteStaticKey: ByteArray = ByteArray(0),
+        /** They have a photo they only swap on request (see [ChatEnvelope.PhotoRequest]). */
+        val remotePhotoHidden: Boolean = false,
+        val photoSwap: PhotoSwap? = null,
+        /** Non-null until the chat request is accepted - no messages before that. */
+        val acceptance: Acceptance? = null,
+        /** Messages disappear this long after they were sent; 0: they stay. */
+        val disappearSeconds: Long = 0,
     ) : ChatUiState
     data class Ended(val reason: String) : ChatUiState
 }

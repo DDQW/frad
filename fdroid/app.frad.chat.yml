@@ -1,0 +1,42 @@
+# Draft build recipe for F-Droid (to be submitted to https://gitlab.com/fdroid/fdroiddata as
+# metadata/app.frad.chat.yml). Kept here so it changes together with the build it describes.
+#
+# The wide-range layer is Go (p2p-go/) bound with gomobile. Everything it needs is pinned in the
+# repository: the Go version in p2p-go/go.mod (fetched by Debian's go through GOTOOLCHAIN=auto and
+# verified against the Go checksum database), gomobile/gobind as go.mod tool dependencies, every
+# Go module in go.sum, and -trimpath / stripped symbols, so the same commit binds to the same .aar.
+
+Categories:
+  - Internet
+License: GPL-3.0-only
+AuthorName: Dominik Wölki
+SourceCode: https://github.com/DDQW/frad
+IssueTracker: https://github.com/DDQW/frad/issues
+Changelog: https://github.com/DDQW/frad/releases
+
+AutoName: FRAD
+
+RepoType: git
+Repo: https://github.com/DDQW/frad.git
+
+Builds:
+  - versionName: 0.3.46
+    versionCode: 50
+    commit: v0.3.46
+    subdir: app
+    sudo:
+      - apt-get update
+      - apt-get install -y -t bookworm-backports golang-go
+    gradle:
+      - yes
+    ndk: r28c
+    prebuild:
+      - export GOTOOLCHAIN=auto GOFLAGS=-mod=readonly
+      - cd .. && ./gradlew gomobileBind
+    scanignore:
+      - p2p-go/build
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9.]+$
+CurrentVersion: 0.3.46
+CurrentVersionCode: 50

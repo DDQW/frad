@@ -24,3 +24,6 @@ keystore.properties
 p2p-go/bootstrap
 p2p-go/bootstrap.exe
 p2p-go/bootstrap_identity.key
+
+# Local agent worktrees (never part of the repo)
+.claude/worktrees/

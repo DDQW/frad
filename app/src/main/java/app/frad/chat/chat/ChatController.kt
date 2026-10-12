@@ -1,5 +1,6 @@
 package app.frad.chat.chat
 
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -10,14 +11,60 @@ import kotlinx.coroutines.flow.StateFlow
  */
 interface ChatController {
     val state: StateFlow<ChatUiState>
+
+    /** One-off messages for the user that aren't a state of their own - e.g. why tapping
+     *  "Chat with someone nearby" did nothing. */
+    val notices: SharedFlow<String>
     val transferStatus: StateFlow<String?>
+
+    /** 0..1 while a file is being transferred, null while that isn't known (or nothing runs). */
+    val transferProgress: StateFlow<Float?>
     val fileTransferAvailable: Boolean
 
     fun setBrowsing(enabled: Boolean)
+
+    /** Whether FRAD is on screen - a layer may do less in the background (see BLE scanning). */
+    fun setUiVisible(visible: Boolean) {}
     fun requestRandomChat()
     fun sendMessage(text: String)
-    fun sendFile(bytes: ByteArray, fileName: String, mimeType: String)
+
+    /** The user is typing in the open chat; the peer is told so (throttled). */
+    fun notifyTyping()
+    /** Asks the peer first (see [ChatEnvelope.FileRequest]) and sends only if they accept -
+     *  streaming [file], a temporary copy the controller takes over: kept as the sent file in
+     *  the chat, deleted if it doesn't go out. */
+    fun sendFile(file: java.io.File, fileName: String, mimeType: String)
+
+    /** The user's answer to [ChatUiState.Chatting.incomingFile]. */
+    fun answerIncomingFile(accept: Boolean)
+
+    /** Stops the file transfer - or the request for one - that [transferStatus] describes. */
+    fun cancelTransfer()
+
+    /** The user's answer to a chat request ([ChatUiState.Chatting.acceptance] == THEY_ASK). */
+    fun answerChatRequest(accept: Boolean)
+
+    /** Messages in the open chat disappear [seconds] after they're sent, on both sides; 0: off. */
+    fun setDisappearTimer(seconds: Long)
+
+    /** Asks the peer to swap profile photos (see [ChatEnvelope.PhotoRequest]). */
+    fun requestPhotoSwap()
+
+    /** The user's answer to [ChatUiState.Chatting.photoSwap] == THEY_ASKED. */
+    fun answerPhotoSwap(accept: Boolean)
     fun endActiveConnection(reason: String)
     fun blockActivePeer()
     fun reportActivePeer(reason: String)
+
+    /** The user has seen an [ChatUiState.Ended] message shown while not browsing - go back to
+     *  [ChatUiState.Idle] so they can start again. */
+    fun acknowledgeEnded()
+
+    /** Saved contacts (by peer ID) that can be reached for a chat right now - wide range only. */
+    val onlineContacts: StateFlow<Set<String>> get() = NO_ONLINE_CONTACTS
+
+    /** Opens a chat with the saved contact [contactPeerId] if [onlineContacts] has them. */
+    fun requestContactChat(contactPeerId: String) {}
 }
+
+private val NO_ONLINE_CONTACTS: StateFlow<Set<String>> = kotlinx.coroutines.flow.MutableStateFlow(emptySet())
