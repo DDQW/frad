@@ -156,7 +156,7 @@ dependencies {
     // Bouncy Castle so the crypto layer behaves identically on minSdk 26+
     // instead of depending on platform JCA algorithm availability, which
     // varies by Android version/OEM.
-    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.87")
 
     // QR codes for frad:// links (servers to share) - encoding only; scanning is left to
     // whatever camera app the other phone has.
